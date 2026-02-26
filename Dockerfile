@@ -47,7 +47,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD pgrep -f "community_bot.py" > /dev/null || exit 1
 
 VOLUME ["/app/data", "/app/logs"]
-EXPOSE 8080
+EXPOSE 8081
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python3", "community_bot.py"]
