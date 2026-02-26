@@ -28,6 +28,9 @@ COPY meshcore-bot/modules/ meshcore-bot/modules/
 COPY meshcore-bot/translations/ meshcore-bot/translations/
 COPY meshcore-bot/config.ini.example meshcore-bot/config.ini.example
 
+# Symlink translations so default config path (translations/) resolves from /app
+RUN ln -sf /app/meshcore-bot/translations /app/translations
+
 # Copy community bot
 COPY community_bot.py .
 COPY community/ community/

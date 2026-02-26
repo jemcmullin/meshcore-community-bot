@@ -511,7 +511,6 @@ class MessageHandler:
                 
                 # Store recent RF data with timestamp for SNR/RSSI matching only
                 if packet_prefix:
-                    import time
                     current_time = time.time()
                     
                     # Store both raw packet data and extracted payload for analysis
@@ -710,7 +709,6 @@ class MessageHandler:
                 - packet_prefix (from raw_hex[:32]) for RF data correlation
                 - pubkey_prefix (from message payload) for message correlation
         """
-        import time
         current_time = time.time()
         
         # Use default timeout if not specified
@@ -762,7 +760,6 @@ class MessageHandler:
     
     def store_message_for_correlation(self, message_id, message_data):
         """Store a message temporarily to wait for RF data correlation"""
-        import time
         self.pending_messages[message_id] = {
             'data': message_data,
             'timestamp': time.time(),
@@ -791,7 +788,6 @@ class MessageHandler:
     
     def cleanup_old_messages(self):
         """Clean up old pending messages that couldn't be correlated"""
-        import time
         current_time = time.time()
         
         to_remove = []
@@ -1256,7 +1252,6 @@ class MessageHandler:
             
             # Strategy 2: If no immediate match and enhanced correlation is enabled, store message and wait briefly
             if not recent_rf_data and self.enhanced_correlation:
-                import time
                 correlation_key = message_packet_prefix or message_pubkey
                 message_id = f"{correlation_key}_{int(time.time() * 1000)}"
                 self.store_message_for_correlation(message_id, payload)
