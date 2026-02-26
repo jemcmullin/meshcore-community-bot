@@ -37,7 +37,7 @@ Everything from [meshcore-bot](https://github.com/cj-vana/meshcore-bot), plus:
 ### 1. Clone the repository
 
 ```bash
-git clone --recurse-submodules https://github.com/cj-vana/meshcore-community-bot.git
+git clone https://github.com/cj-vana/meshcore-community-bot.git
 cd meshcore-community-bot
 ```
 
@@ -62,6 +62,7 @@ MESH_REGION=DEN
 
 # Coordinator (provided by network admin)
 COORDINATOR_URL=https://coordinator.denvermc.com
+COORDINATOR_REGISTRATION_KEY=your-key-here
 ```
 
 ### 3. Configure the bot
@@ -106,7 +107,9 @@ Set these in your `.env` file:
 | `MESHCORE_LATITUDE` | Recommended | Your location (for scoring) |
 | `MESHCORE_LONGITUDE` | Recommended | Your location (for scoring) |
 | `COORDINATOR_URL` | Recommended | Coordinator API URL |
+| `COORDINATOR_REGISTRATION_KEY` | For coordinator | Registration key from network admin |
 | `MESH_REGION` | Optional | Region code (e.g., `DEN`) |
+| `WEB_VIEWER_PORT` | Optional | Web viewer port (default: `8081`) |
 | `DISCORD_BOT_WEBHOOK_URL` | Optional | Discord webhook for #bot messages |
 | `DISCORD_EMERGENCY_WEBHOOK_URL` | Optional | Discord webhook for #emergency |
 | `TZ` | Optional | Timezone (default: `America/Denver`) |
@@ -140,7 +143,7 @@ All commands from meshcore-bot are available, plus:
 Pull the latest changes and rebuild:
 
 ```bash
-git pull --recurse-submodules
+git pull
 docker compose up -d --build
 ```
 
@@ -162,7 +165,7 @@ services:
 ## Development
 
 ```bash
-git clone --recurse-submodules https://github.com/cj-vana/meshcore-community-bot.git
+git clone https://github.com/cj-vana/meshcore-community-bot.git
 cd meshcore-community-bot
 pip install -r requirements.txt
 python3 community_bot.py
@@ -175,6 +178,7 @@ python3 community_bot.py
 - Make sure Docker has device access (check `docker-compose.yml` devices section)
 
 **Coordinator registration failed:**
+- Ensure `COORDINATOR_REGISTRATION_KEY` is set (obtain from network admin)
 - Check `COORDINATOR_URL` is correct
 - Bot still works in standalone mode - it will retry on next heartbeat
 

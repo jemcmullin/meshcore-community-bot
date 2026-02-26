@@ -81,8 +81,10 @@ class MyCommand(BaseCommand):
 
 Config via environment variables (`.env`) mapped to `config.ini` by `docker/entrypoint.sh`:
 - `COORDINATOR_URL` - Central coordinator API URL
+- `COORDINATOR_REGISTRATION_KEY` - Registration key (required, from network admin)
 - `COORDINATOR_TIMEOUT_MS` - Coordination timeout (default 500ms for bidding window)
 - `MESH_REGION` - Region code (e.g., DEN)
+- `WEB_VIEWER_PORT` - Web viewer port (default 8081)
 - `DISCORD_BOT_WEBHOOK_URL` - Discord webhook for #bot channel
 - `DISCORD_EMERGENCY_WEBHOOK_URL` - Discord webhook for #emergency
 - `MESHCORE_*` - All standard meshcore-bot settings

@@ -21,6 +21,8 @@ db_path = data/meshcore_bot.db
 # URL of the central MeshCore Coordinator API
 # Leave empty to run in standalone mode (no coordination)
 url =
+# Registration key (required - obtain from network admin)
+# registration_key =
 # IATA-style mesh region code (e.g., DEN, LAX)
 mesh_region =
 # Heartbeat interval in seconds
@@ -48,7 +50,7 @@ emergency_broadcast_channel =
 [Web_Viewer]
 enabled = true
 host = 0.0.0.0
-port = 8080
+port = 8081
 auto_start = true
 
 [Logging]
