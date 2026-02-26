@@ -164,7 +164,9 @@ class CommunityBot(MeshCoreBot):
         if self.meshcore and hasattr(self.meshcore, "self_info"):
             try:
                 info = self.meshcore.self_info
-                if info and hasattr(info, "public_key"):
+                if info and isinstance(info, dict):
+                    public_key = info.get("public_key", "") or ""
+                elif info and hasattr(info, "public_key"):
                     public_key = info.public_key or ""
             except Exception:
                 pass
@@ -174,8 +176,8 @@ class CommunityBot(MeshCoreBot):
             return False
 
         bot_name = self.config.get("Bot", "bot_name", fallback="CommunityBot")
-        lat = self.config.getfloat("Bot", "latitude", fallback=None)
-        lon = self.config.getfloat("Bot", "longitude", fallback=None)
+        lat = self.config.getfloat("Bot", "bot_latitude", fallback=None)
+        lon = self.config.getfloat("Bot", "bot_longitude", fallback=None)
         conn_type = self.config.get("Connection", "connection_type", fallback="serial")
 
         # Get loaded command names
