@@ -30,7 +30,7 @@ _DEFAULT_CLEANUP_INTERVAL = 86400
 _DEFAULT_SUMMARY_INTERVAL = 3600
 
 # Save to DB every N path observations to reduce write load
-_SAVE_THROTTLE = 50
+_SAVE_THROTTLE = 10
 
 
 class NetworkObserver:
