@@ -94,19 +94,29 @@ class CommunityBot(MeshCoreBot):
         self.logger.info("Community bot initialized with coordinator support")
 
     def _setup_community_logging(self):
-        """Attach the same colored formatter used by MeshCoreBot to all community.* loggers."""
+        """Mirror all MeshCoreBot handlers onto the CommunityBot logger.
+
+        Copies every handler (console + file) so community log lines appear
+        in the same destinations — including the log file — as MeshCoreBot lines.
+        """
         import colorlog
 
-        # Grab formatter from the MeshCoreBot logger if available
         meshcore_logger = logging.getLogger("MeshCoreBot")
-        existing_formatter = None
-        for handler in meshcore_logger.handlers:
-            if handler.formatter is not None:
-                existing_formatter = handler.formatter
-                break
+        community_logger = logging.getLogger("CommunityBot")
+        community_logger.setLevel(meshcore_logger.level or logging.DEBUG)
+        community_logger.propagate = False
 
-        if existing_formatter is None:
-            existing_formatter = colorlog.ColoredFormatter(
+        # Remove stale handlers from previous calls (e.g. hot-reload)
+        community_logger.handlers.clear()
+
+        if meshcore_logger.handlers:
+            # Reuse the exact same handler instances — they already have the
+            # right formatter and file path configured by MeshCoreBot.setup_logging()
+            for handler in meshcore_logger.handlers:
+                community_logger.addHandler(handler)
+        else:
+            # Fallback: MeshCoreBot not yet configured, add a plain colored console handler
+            formatter = colorlog.ColoredFormatter(
                 "%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S",
                 log_colors={
@@ -117,14 +127,8 @@ class CommunityBot(MeshCoreBot):
                     "CRITICAL": "red,bg_white",
                 },
             )
-
-        community_logger = logging.getLogger("CommunityBot")
-        community_logger.setLevel(meshcore_logger.level or logging.DEBUG)
-        community_logger.propagate = False
-
-        if not community_logger.handlers:
             handler = logging.StreamHandler()
-            handler.setFormatter(existing_formatter)
+            handler.setFormatter(formatter)
             community_logger.addHandler(handler)
 
     def _load_community_commands(self):
