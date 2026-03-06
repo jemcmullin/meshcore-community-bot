@@ -74,6 +74,12 @@ class NetworkObserver:
         self.summary_interval_seconds = int(
             _get("summary_interval_seconds", _DEFAULT_SUMMARY_INTERVAL)
         )
+        logger.info(
+            f"NetworkObserver config: window={self.window_days}d "
+            f"min_obs={self.min_observations} "
+            f"cleanup={self.cleanup_interval_seconds}s "
+            f"summary={self.summary_interval_seconds}s"
+        )
 
     # ------------------------------------------------------------------
     # DB schema
@@ -131,9 +137,17 @@ class NetworkObserver:
                         "total": total or 0,
                         "last_hop": last_hop or 0,
                     }
-            logger.debug(
-                f"NetworkObserver loaded {len(self._node_counts)} nodes from DB"
+            logger.info(
+                f"NetworkObserver loaded {len(self._node_counts)} repeater nodes "
+                f"from DB (window={self.window_days}d, cutoff={cutoff})"
             )
+            for node_id, counts in self._node_counts.items():
+                sig = self.get_node_significance(node_id)
+                role = "private feeder" if sig < 0.3 else ("shared infra" if sig > 0.7 else "mixed")
+                logger.debug(
+                    f"  Loaded {node_id}: total={counts['total']} "
+                    f"last_hop={counts['last_hop']} sig={sig:.2f} ({role})"
+                )
         except Exception as e:
             logger.warning(f"NetworkObserver: failed to load from DB: {e}")
 
@@ -152,6 +166,7 @@ class NetworkObserver:
                     """,
                     (node_id, today, counts["total"], counts["last_hop"]),
                 )
+            logger.debug(f"NetworkObserver flushed {len(self._node_counts)} nodes to DB ({today})")
         except Exception as e:
             logger.warning(f"NetworkObserver: failed to flush to DB: {e}")
 
@@ -163,6 +178,7 @@ class NetworkObserver:
                 "DELETE FROM repeater_daily_stats WHERE date_bucket < ?",
                 (cutoff,),
             )
+            logger.debug(f"NetworkObserver cleanup: removed rows older than {cutoff}")
         except Exception as e:
             logger.warning(f"NetworkObserver: cleanup failed: {e}")
 
@@ -181,6 +197,11 @@ class NetworkObserver:
 
         last_node = path_nodes[-1]
 
+        logger.info(
+            f"NetworkObserver path: nodes={path_nodes} last_hop={last_node} "
+            f"(obs_since_save={self._obs_since_save + 1}/{_SAVE_THROTTLE})"
+        )
+
         for node_id in path_nodes:
             prev_total = self._node_counts.get(node_id, {}).get("total", 0)
             if node_id not in self._node_counts:
@@ -195,15 +216,17 @@ class NetworkObserver:
                 sig = self.get_node_significance(node_id)
                 role = "private feeder" if sig < 0.3 else ("shared infra" if sig > 0.7 else "mixed")
                 logger.info(
-                    f"Repeater {node_id}: significance={sig:.2f} ({role}) "
-                    f"after {new_total} observations "
-                    f"[last_hop={self._node_counts[node_id]['last_hop']}]"
+                    f"Repeater {node_id} reached min_obs threshold: "
+                    f"significance={sig:.2f} ({role}) "
+                    f"total={new_total} last_hop={self._node_counts[node_id]['last_hop']}"
                 )
             else:
-                logger.debug(
-                    f"Observed {node_id}: total={self._node_counts[node_id]['total']} "
+                sig = self.get_node_significance(node_id)
+                role = "private feeder" if sig < 0.3 else ("shared infra" if sig > 0.7 else "mixed")
+                logger.info(
+                    f"  {node_id}: total={self._node_counts[node_id]['total']} "
                     f"last_hop={self._node_counts[node_id]['last_hop']} "
-                    f"sig={self.get_node_significance(node_id):.2f}"
+                    f"sig={sig:.2f} ({role})"
                 )
 
         self._obs_since_save += 1
