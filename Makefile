@@ -1,4 +1,4 @@
-.PHONY: build up down logs pull
+.PHONY: build up down logs pull submodule
 
 # Ensure submodule is initialized before any docker operation
 submodule:
@@ -16,9 +16,5 @@ down:
 logs:
 	docker compose logs -f
 
-# Update submodule to latest (intentional upgrade, not automatic)
-pull: 
-	git submodule update --remote --merge
-	git add meshcore-bot
-	git diff --cached --stat
-	@echo "Review the diff above, then: git commit -m 'chore: update meshcore-bot submodule'"
+pull:
+	git pull

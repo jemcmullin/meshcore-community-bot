@@ -147,18 +147,37 @@ All commands from meshcore-bot are available, plus:
 Pull the latest changes and rebuild:
 
 ```bash
-git pull
+make pull
 make build
 make up
 ```
 
-To intentionally upgrade the meshcore-bot submodule:
+To upgrade the pinned `meshcore-bot` submodule version, do so directly with git:
 
 ```bash
-make pull   # fetches latest, shows diff, prompts you to commit
+git submodule update --remote --merge
+git add meshcore-bot
+git commit -m 'chore: update meshcore-bot submodule'
 make build
 make up
 ```
+
+### Emergency submodule override (for users)
+
+The `meshcore-bot` submodule is pinned to a tested version and updated deliberately by the maintainers. In most cases you should not need to change it.
+
+However, if a breaking change in `meshcore-bot` upstream is blocking your deployment before an official update is released, you can temporarily pin to a specific commit yourself:
+
+```bash
+cd meshcore-bot
+git fetch
+git checkout <commit-sha>   # or a branch/tag, e.g. git checkout main
+cd ..
+make build
+make up
+```
+
+> **Note:** This is a local override only — it does not affect other users and will be overwritten the next time you run `make pull` + `make build` from a fresh clone. If you find a fix is needed upstream, please open an issue so the maintainers can update the pinned version for everyone.
 
 ## Pre-Built Docker Images
 
