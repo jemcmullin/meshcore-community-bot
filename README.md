@@ -29,6 +29,7 @@ Everything from [meshcore-bot](https://github.com/cj-vana/meshcore-bot), plus:
 ## Requirements
 
 - Docker & Docker Compose
+- `make` — on Debian/Ubuntu: `sudo apt-get install -y make`
 - MeshCore-compatible radio (Heltec V3, RAK Wireless, etc.)
 - USB cable, BLE, or TCP connection to the radio
 
