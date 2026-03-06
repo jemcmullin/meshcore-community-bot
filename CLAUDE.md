@@ -16,25 +16,31 @@ MeshCore Community Bot - Extended MeshCore mesh radio bot with multi-bot coordin
 
 `meshcore-bot/` is a git submodule tracking upstream. The strong preference is **never modify files inside `meshcore-bot/`**. Instead:
 
-1. **Patch via community layer** — monkey-patch methods at runtime from `community/` code (e.g. `MessageInterceptor` patches `send_response` and `process_message` using `types.MethodType`).
+1. **Patch via community layer** — monkey-patch methods at runtime from `community/` code (e.g. `MessageInterceptor` patches `handle_rf_log_data`, `process_message`, and `send_response` using `types.MethodType`).
 2. **If a submodule change is unavoidable**, record it in `MESHCORE-BOT-PATCHES/` as a numbered `.patch` file (format: `NNN-short-description.patch`) so it can be re-applied after submodule updates.
 3. **DB table whitelist** — `db_manager.py` enforces `ALLOWED_TABLES` on `create_table()`/`drop_table()`. Community tables are **not** in that whitelist. Use `db_manager.execute_query("CREATE TABLE IF NOT EXISTS ...")` for DDL in community code — `execute_query()` is not whitelist-gated.
 
 ## Key Integration Point
 
-**`CommandManager.send_response()`** and **`MessageHandler.process_message()`** are both patched by `MessageInterceptor` using `types.MethodType`. This captures ALL bot responses and ALL incoming channel messages without touching the submodule.
+`MessageInterceptor` patches three methods on the bot via `types.MethodType`:
 
-`send_response` intercept:
+**`MessageHandler.handle_rf_log_data()`** (primary path-observation source):
+
+1. Fires on every raw RF frame, before `process_message` and for packet types that never reach it (ADVERT, non-command TXT_MSG, etc.)
+2. Snapshots `len(recent_rf_data)` before the original runs, then reads `[-1].routing_info.path_nodes` from the newly-appended entry
+3. Feeds those path nodes to `NetworkObserver` — this is the sole observation source
+
+**`MessageHandler.process_message()`** (counter only):
+
+1. Increments `messages_processed_count` on the bot
+2. Does **not** feed the observer — `handle_rf_log_data` already covered the same path, avoiding double-counting
+
+**`CommandManager.send_response()`** (coordination gate):
 
 1. Lets DMs through immediately (no coordination needed)
 2. Queries local DB for outbound hop count + path significance (see Coordination Flow)
 3. Checks with coordinator — 300ms bidding window, proximity-scored, best bot responds
 4. Falls back to proximity-weighted delay if coordinator unreachable (500ms timeout)
-
-`process_message` intercept:
-
-1. Feeds every non-DM channel message path into `NetworkObserver` before normal processing
-2. This gives the observer far more data than commands alone (learns repeater roles faster)
 
 All 20+ existing commands work unchanged — they call `BaseCommand.send_response()` which delegates to `CommandManager.send_response()`.
 
@@ -45,7 +51,7 @@ community_bot.py                    # Entry point
 community/
 ├── community_core.py              # CommunityBot extends MeshCoreBot
 ├── coordinator_client.py          # httpx client for coordinator API (lazy AsyncClient init)
-├── message_interceptor.py         # Patches send_response + process_message via MethodType
+├── message_interceptor.py         # Patches handle_rf_log_data + process_message + send_response via MethodType
 ├── network_observer.py            # Learns repeater significance from observed traffic
 ├── packet_reporter.py             # Background batch reporter
 ├── coverage_fallback.py           # Proximity-weighted delay when coordinator down
@@ -131,7 +137,7 @@ docker compose logs -f
 
 ## Coordination Flow
 
-1. **Every** channel message → `MessageInterceptor._observing_process_message()` feeds path nodes to `NetworkObserver` (learns repeater roles over time)
+1. **Every raw RF frame** → `MessageInterceptor._observing_handle_rf_log_data()` reads the newly-decoded `routing_info['path_nodes']` from `recent_rf_data` and feeds them to `NetworkObserver` (learns repeater roles over time). Covers ADVERT, non-command TXT_MSG, and all other packet types.
 2. If message matches a command → `_coordinated_send_response()` runs:
    a. Query DB: `outbound_hops` (from `complete_contact_tracking.out_path_len`) + `path_significance` (from `NetworkObserver`)
    b. Compute `sender_proximity_score = hop_score × hop_weight + path_sig × path_sig_weight`

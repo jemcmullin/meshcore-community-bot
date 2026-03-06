@@ -1,15 +1,20 @@
-"""Intercepts bot responses to add coordinator-based coordination.
+"""Patches three MessageHandler/CommandManager methods via MethodType so
+coordination, path observation, and reporting all work without touching the
+submodule.
 
-Patches CommandManager.send_response() and MessageHandler.process_message()
-via types.MethodType so coordination and passive path observation both work
-without touching the submodule.
+Patches installed:
+  handle_rf_log_data  — primary path-observation source; fires on every raw RF
+                        frame and has routing_info (path_nodes) already decoded.
+  process_message     — secondary source for the high-level MeshMessage path
+                        field on channel messages that happen to be commands.
+  send_response       — coordinator bidding gate; also drives PacketReporter.
 
-DMs bypass coordination. Channel messages:
-  1. Path fed to NetworkObserver for repeater learning.
-  2. DB queried for outbound hops + path significance.
-  3. Proximity score sent to coordinator (300 ms bidding window).
+Channel message flow through send_response:
+  1. DB queried for outbound hops + path significance.
+  2. Proximity score sent to coordinator (300 ms bidding window).
+  3. Coordinator assigns response to one bot; others suppress.
   4. Falls back to signal-aware delay if coordinator unreachable.
-Also reports messages to PacketReporter for batch ingestion.
+DMs bypass coordination entirely.
 """
 
 import logging
@@ -24,7 +29,7 @@ logger = logging.getLogger("CommunityBot")
 
 
 class MessageInterceptor:
-    """Intercepts send_response and process_message to coordinate responses."""
+    """Monkey-patches bot methods to add coordination, path observation, and reporting."""
 
     def __init__(
         self,
@@ -50,7 +55,7 @@ class MessageInterceptor:
             _bound_send_response, bot.command_manager
         )
 
-        # --- Patch process_message if we have an observer ---
+        # --- Patch process_message (secondary path-observation source) ---
         self._original_process_message = None
         if hasattr(bot, "message_handler"):
             self._original_process_message = bot.message_handler.process_message
@@ -63,34 +68,85 @@ class MessageInterceptor:
             )
             logger.info("Message interceptor installed on MessageHandler.process_message")
 
+        # --- Patch handle_rf_log_data (primary path-observation source) ---
+        # Fires on every raw RF frame; routing_info is decoded here before
+        # process_message and for packet types that never reach process_message
+        # (ADVERT, non-command TXT_MSG, etc.).
+        self._original_handle_rf_log_data = None
+        if hasattr(bot, "message_handler") and self.network_observer is not None:
+            self._original_handle_rf_log_data = bot.message_handler.handle_rf_log_data
+
+            async def _bound_handle_rf_log_data(mh_self, event, metadata=None):
+                return await self._observing_handle_rf_log_data(event, metadata)
+
+            bot.message_handler.handle_rf_log_data = MethodType(
+                _bound_handle_rf_log_data, bot.message_handler
+            )
+            logger.info("Message interceptor installed on MessageHandler.handle_rf_log_data")
+
         logger.info("Message interceptor installed on CommandManager.send_response")
 
     # ------------------------------------------------------------------
-    # process_message wrapper — feeds every channel message to observer
+    # process_message patch — secondary path-observation source
     # ------------------------------------------------------------------
 
     async def _observing_process_message(self, message):
-        """Wrap process_message to feed path data to NetworkObserver."""
-        if (
-            self.network_observer is not None
-            and not getattr(message, "is_dm", True)
-            and getattr(message, "path", None)
-        ):
-            path_nodes = CoordinatorClient.parse_path_nodes(message.path)
-            if path_nodes:
-                self.network_observer.observe_path(path_nodes)
+        """Increment messages_processed_count, then run the original.
 
+        Path observation is intentionally omitted here — handle_rf_log_data
+        already feeds every decoded path to NetworkObserver (including packet
+        types that never reach process_message).  Observing again here would
+        double-count the same path nodes for command messages.
+        """
+        assert self._original_process_message is not None
         if hasattr(self.bot, "messages_processed_count"):
             self.bot.messages_processed_count += 1
 
         return await self._original_process_message(message)
 
     # ------------------------------------------------------------------
-    # send_response wrapper — coordinator bidding + fallback
+    # handle_rf_log_data patch — primary path-observation source
+    # ------------------------------------------------------------------
+
+    async def _observing_handle_rf_log_data(self, event, metadata=None):
+        """Run the original handler, then feed its decoded path to NetworkObserver.
+
+        The original appends to recent_rf_data with routing_info already
+        populated.  Snapshot the list length first so we can detect whether a
+        new entry was added — guarding against reading a stale [-1] entry when a
+        packet had no raw_hex and was never appended.  No duplicate decode and no
+        deep copy needed: asyncio is single-threaded so nothing mutates the list
+        between the awaited return and our read.
+        """
+        mh = self.bot.message_handler
+        len_before = len(getattr(mh, "recent_rf_data", []))
+
+        assert self._original_handle_rf_log_data is not None
+        result = await self._original_handle_rf_log_data(event, metadata)
+
+        if self.network_observer is not None:
+            try:
+                rf_list = getattr(mh, "recent_rf_data", [])
+                if len(rf_list) > len_before:
+                    path_nodes = (rf_list[-1].get("routing_info") or {}).get("path_nodes", [])
+                    if path_nodes:
+                        self.network_observer.observe_path(path_nodes)
+                        logger.debug(
+                            "NetworkObserver fed %d path nodes from RF log: %s",
+                            len(path_nodes),
+                            path_nodes,
+                        )
+            except Exception:
+                pass  # Never let observer errors block the original handler
+
+        return result
+
+    # ------------------------------------------------------------------
+    # send_response patch — coordinator bidding + reporting
     # ------------------------------------------------------------------
 
     async def _coordinated_send_response(self, message, content: str, **kwargs) -> bool:
-        """Coordinated version of send_response."""
+        """Gate send_response through the coordinator bidding window."""
         # DMs always go through
         if message.is_dm:
             result = await self._original_send_response(message, content, **kwargs)
@@ -258,8 +314,10 @@ class MessageInterceptor:
     # ------------------------------------------------------------------
 
     def restore(self):
-        """Restore original patched methods."""
+        """Restore all patched methods to their originals."""
         self.bot.command_manager.send_response = self._original_send_response
         if self._original_process_message is not None and hasattr(self.bot, "message_handler"):
             self.bot.message_handler.process_message = self._original_process_message
+        if self._original_handle_rf_log_data is not None and hasattr(self.bot, "message_handler"):
+            self.bot.message_handler.handle_rf_log_data = self._original_handle_rf_log_data
         logger.info("Message interceptor removed")

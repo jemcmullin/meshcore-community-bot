@@ -124,26 +124,29 @@ Two changes:
 
 #### `community/message_interceptor.py`
 
-Three additions:
+Four additions (three patches + path metrics):
 
-1. **Accept `network_observer: Optional[NetworkObserver] = None`** in `__init__` and also patch `MessageHandler.process_message()` (in addition to `send_response`). The process_message patch uses `MethodType` so Python's method binding works correctly when called as `await self.process_message(message)` on the handler instance.
+1. **Accept `network_observer: Optional[NetworkObserver] = None`** in `__init__` and install **two additional** `MethodType` patches on `MessageHandler`:
+   - **`handle_rf_log_data` (primary observation source)** — fires on every raw RF frame. `routing_info['path_nodes']` is already decoded by the original handler before it appends to `recent_rf_data`. The wrapper snapshots `len(recent_rf_data)` before calling the original, then reads `[-1].routing_info.path_nodes` from the newly-appended entry. The length check guards against reading a stale entry when a packet with no `raw_hex` is skipped. No duplicate decode and no deep copy needed — asyncio is single-threaded so the list cannot be mutated between the awaited return and the read. This fires for **all** packet types including ADVERT and non-command TXT_MSG that never reach `process_message`.
 
-   `restore()` must also restore `process_message`.
+   - **`process_message` (secondary — counter only)** — wraps the original solely to increment `self.bot.messages_processed_count`. Path observation is **not** performed here to avoid double-counting: `handle_rf_log_data` already observes the same path nodes for every packet that eventually reaches `process_message`.
 
-2. **Add `_observing_process_message(message)`** — wraps the original `process_message`. Before the normal pipeline runs, if the message is a non-DM channel message with a path, call `network_observer.observe_path(path_nodes)`. This runs for _every_ channel message, giving NetworkObserver far more data than just commands.
+   `restore()` must restore all three patched methods.
 
-3. **Add `_get_path_metrics(message) → (outbound_hops, path_significance)`** — queries the local DB:
-   - `outbound_hops`: from `complete_contact_tracking.out_path_len` for this sender's pubkey. This is the most reliable signal for reply-path length.
+2. **Add `_observing_handle_rf_log_data(event, metadata)`** — primary observation patch (see above).
+
+3. **Add `_observing_process_message(message)`** — increments `messages_processed_count` only; does **not** call `observe_path`.
+
+4. **Add `_get_path_metrics(message) → (outbound_hops, path_significance)`** — queries the local DB:
+   - `outbound_hops`: from `complete_contact_tracking.out_path_len` for this sender's pubkey.
    - `path_significance`: calls `network_observer.compute_path_significance(path_nodes)`.
-     Both return `None` on error or missing data (handled gracefully by the scoring math).
+     Both return `None` on error or missing data (handled gracefully by the scoring math). Called in `_coordinated_send_response()` before the coordinator bid.
 
-   This is called in `_coordinated_send_response()` before the coordinator bid, giving the coordinator (and fallback) the best available path quality data.
+5. **Fallback path**: `await self.fallback.wait_before_responding_with_signal(hops=..., outbound_hops=..., path_significance=...)`.
 
-4. **Fallback path**: Change `await self.fallback.wait_before_responding()` to `await self.fallback.wait_before_responding_with_signal(hops=..., outbound_hops=..., path_significance=...)`.
+6. **Metrics**: `self.bot.messages_responded_count` incremented in `_coordinated_send_response`; `messages_processed_count` incremented in `_observing_process_message`.
 
-5. **Metrics updates**: `self.bot.messages_processed_count` and `self.bot.messages_responded_count` are incremented here (these counters are initialized in `community_core.py`).
-
-**Non-breaking concern:** The `network_observer=None` default makes the new `__init__` signature additive. When `network_observer` is None, `_observing_process_message` simply passes through to the original, and `_get_path_metrics` skips the significance calculation. The `process_message` patch is safe: it does nothing extra without a `network_observer`.
+**Non-breaking concern:** `network_observer=None` default is additive. When `None`, the `handle_rf_log_data` patch is not installed at all. `_observing_process_message` still runs (for the counter) but skips observation. `_get_path_metrics` returns `(None, None)`.
 
 ---
 
@@ -262,13 +265,13 @@ The full content of all changed files from `best-path-score` was fetched during 
 
 ## Files Summary
 
-| File                                    | Action                                                                                                     | Lines changed (approx) |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------- |
-| `community/scoring_observer_config.ini` | **Create**                                                                                                 | ~60                    |
-| `community/network_observer.py`         | **Create**                                                                                                 | ~250                   |
-| `community/config.py`                   | **Modify** — add `ScoringConfig`                                                                           | +60                    |
-| `community/coordinator_client.py`       | **Modify** — lazy client, 2 static methods, extend `should_respond`                                        | +120                   |
-| `community/coverage_fallback.py`        | **Modify** — `scoring_config` param, 2 new methods                                                         | +60                    |
-| `community/message_interceptor.py`      | **Modify** — `network_observer` param, `process_message` patch, `_get_path_metrics`, signal-aware fallback | +90                    |
-| `community/community_core.py`           | **Modify** — wire `ScoringConfig`, `NetworkObserver`, metrics                                              | +15                    |
-| `meshcore-bot/`                         | **No changes**                                                                                             | 0                      |
+| File                                    | Action                                                                                                                                                          | Lines changed (approx) |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| `community/scoring_observer_config.ini` | **Create**                                                                                                                                                      | ~60                    |
+| `community/network_observer.py`         | **Create**                                                                                                                                                      | ~250                   |
+| `community/config.py`                   | **Modify** — add `ScoringConfig`                                                                                                                                | +60                    |
+| `community/coordinator_client.py`       | **Modify** — lazy client, 2 static methods, extend `should_respond`                                                                                             | +120                   |
+| `community/coverage_fallback.py`        | **Modify** — `scoring_config` param, 2 new methods                                                                                                              | +60                    |
+| `community/message_interceptor.py`      | **Modify** — `network_observer` param, `handle_rf_log_data` patch (primary), `process_message` patch (counter only), `_get_path_metrics`, signal-aware fallback | +110                   |
+| `community/community_core.py`           | **Modify** — wire `ScoringConfig`, `NetworkObserver`, metrics                                                                                                   | +15                    |
+| `meshcore-bot/`                         | **No changes**                                                                                                                                                  | 0                      |
