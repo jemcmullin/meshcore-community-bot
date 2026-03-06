@@ -119,7 +119,11 @@ class MessageInterceptor:
         between the awaited return and our read.
         """
         mh = self.bot.message_handler
-        len_before = len(getattr(mh, "recent_rf_data", []))
+        # Snapshot time before the call so we can identify the newly-appended entry
+        # afterward.  We cannot use len() because _cleanup_stale_cache_entries runs
+        # inside handle_rf_log_data and replaces recent_rf_data with a new filtered
+        # list — so len can decrease even when a new entry was added.
+        t_before = time.time()
 
         assert self._original_handle_rf_log_data is not None
         result = await self._original_handle_rf_log_data(event, metadata)
@@ -127,7 +131,9 @@ class MessageInterceptor:
         if self.network_observer is not None:
             try:
                 rf_list = getattr(mh, "recent_rf_data", [])
-                if len(rf_list) > len_before:
+                # The newly-appended entry (if any) will have timestamp >= t_before.
+                # Entries added before this call will all be < t_before.
+                if rf_list and rf_list[-1].get("timestamp", 0) >= t_before:
                     path_nodes = (rf_list[-1].get("routing_info") or {}).get("path_nodes", [])
                     if path_nodes:
                         self.network_observer.observe_path(path_nodes)
