@@ -59,3 +59,38 @@ class CoordinatorConfig:
                 config.get("Coordinator", "mesh_region", fallback=""),
             ),
         )
+
+
+@dataclass
+class ScoringConfig:
+    """Configuration for proximity scoring and fallback timing."""
+
+    hop_weight: float = 0.6
+    path_sig_weight: float = 0.4
+    base_delay_ms: int = 2000
+    min_delay_ms: int = 100
+    max_jitter_ms: int = 200
+    degrade_after_seconds: int = 3600
+    degrade_target: float = 0.5
+    degrade_window_seconds: int = 86400
+
+    @classmethod
+    def from_env_and_config(cls, config) -> "ScoringConfig":
+        """Load scoring config from [Scoring] section and SCORING_* env vars."""
+
+        def _get(key, default):
+            env_key = f"SCORING_{key.upper()}"
+            if env_key in os.environ:
+                return os.environ[env_key]
+            return config.get("Scoring", key, fallback=str(default))
+
+        return cls(
+            hop_weight=float(_get("hop_weight", 0.6)),
+            path_sig_weight=float(_get("path_sig_weight", 0.4)),
+            base_delay_ms=int(_get("base_delay_ms", 2000)),
+            min_delay_ms=int(_get("min_delay_ms", 100)),
+            max_jitter_ms=int(_get("max_jitter_ms", 200)),
+            degrade_after_seconds=int(_get("degrade_after_seconds", 3600)),
+            degrade_target=float(_get("degrade_target", 0.5)),
+            degrade_window_seconds=int(_get("degrade_window_seconds", 86400)),
+        )

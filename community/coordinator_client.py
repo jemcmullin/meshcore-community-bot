@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -31,11 +32,9 @@ class CoordinatorClient:
         # Load saved token
         self._load_token()
 
-        # HTTP client with connection pooling
-        self._client = httpx.AsyncClient(
-            base_url=self.base_url,
-            timeout=httpx.Timeout(5.0, connect=2.0),
-        )
+        # HTTP client lazily initialized on first use (avoids event-loop
+        # binding issues when __init__ runs before asyncio starts)
+        self._client: Optional[httpx.AsyncClient] = None
 
     @property
     def is_configured(self) -> bool:
@@ -78,6 +77,15 @@ class CoordinatorClient:
             return {"Authorization": f"Bearer {self.bot_token}"}
         return {}
 
+    async def _ensure_client(self) -> httpx.AsyncClient:
+        """Return the shared AsyncClient, creating it on first use."""
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=httpx.Timeout(5.0, connect=2.0),
+            )
+        return self._client
+
     async def register(
         self,
         bot_name: str,
@@ -110,7 +118,8 @@ class CoordinatorClient:
             }
 
         try:
-            resp = await self._client.post(
+            client = await self._ensure_client()
+            resp = await client.post(
                 "/api/v1/bots/register",
                 json=payload,
             )
@@ -142,7 +151,8 @@ class CoordinatorClient:
             return False
 
         try:
-            resp = await self._client.post(
+            client = await self._ensure_client()
+            resp = await client.post(
                 "/api/v1/bots/heartbeat",
                 json={
                     "bot_id": self.bot_id,
@@ -180,6 +190,10 @@ class CoordinatorClient:
         receiver_rssi: Optional[int] = None,
         receiver_hops: Optional[int] = None,
         receiver_path: Optional[str] = None,
+        outbound_hops: Optional[int] = None,
+        path_significance: Optional[float] = None,
+        hop_weight: float = 0.6,
+        path_sig_weight: float = 0.4,
     ) -> Optional[bool]:
         """Ask coordinator if this bot should respond to a message.
 
@@ -201,7 +215,7 @@ class CoordinatorClient:
             "is_dm": is_dm,
             "timestamp": timestamp,
         }
-        # Include signal data when available
+        # Include signal data (analytics only)
         if receiver_snr is not None:
             payload["receiver_snr"] = receiver_snr
         if receiver_rssi is not None:
@@ -210,9 +224,19 @@ class CoordinatorClient:
             payload["receiver_hops"] = receiver_hops
         if receiver_path is not None:
             payload["receiver_path"] = receiver_path
+        # Include computed proximity score as primary bidding field
+        sender_proximity_score = self.compute_sender_proximity_score(
+            inbound_hops=receiver_hops,
+            outbound_hops=outbound_hops,
+            path_significance=path_significance,
+            hop_weight=hop_weight,
+            path_sig_weight=path_sig_weight,
+        )
+        payload["sender_proximity_score"] = sender_proximity_score
 
         try:
-            resp = await self._client.post(
+            client = await self._ensure_client()
+            resp = await client.post(
                 "/api/v1/coordination/should-respond",
                 json=payload,
                 headers=self._auth_headers(),
@@ -235,7 +259,8 @@ class CoordinatorClient:
             return False
 
         try:
-            resp = await self._client.post(
+            client = await self._ensure_client()
+            resp = await client.post(
                 "/api/v1/messages/batch",
                 json={
                     "bot_id": self.bot_id,
@@ -252,7 +277,62 @@ class CoordinatorClient:
 
     async def close(self):
         """Close the HTTP client."""
-        await self._client.aclose()
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    @staticmethod
+    def parse_path_nodes(path_string: Optional[str]) -> list[str]:
+        """Extract repeater node IDs from a path string.
+
+        Examples:
+          "98,11,a4 (2 hops via Flood)" → ["98", "11", "A4"]
+          "Direct"                       → []
+          None / ""                      → []
+        """
+        if not path_string:
+            return []
+        path_string = path_string.strip()
+        if path_string.lower().startswith("direct"):
+            return []
+        # Strip trailing annotation like " (2 hops via Flood)"
+        path_string = re.sub(r"\s*\(.*?\)\s*$", "", path_string).strip()
+        if not path_string:
+            return []
+        return [n.strip().upper() for n in path_string.split(",") if n.strip()]
+
+    @staticmethod
+    def compute_sender_proximity_score(
+        inbound_hops: Optional[int],
+        outbound_hops: Optional[int],
+        path_significance: Optional[float],
+        hop_weight: float = 0.6,
+        path_sig_weight: float = 0.4,
+    ) -> float:
+        """Compute a blended proximity score for bidding.
+
+        Higher score = this bot is closer to / has a better path to sender.
+
+        hop_score = max(0, 1 - best_hops * 0.25)
+        best_hops = min(inbound_hops, outbound_hops) if both available
+        blended   = hop_score * hop_weight + path_significance * path_sig_weight
+        """
+        best_hops: Optional[int] = None
+        if inbound_hops is not None and outbound_hops is not None:
+            best_hops = min(inbound_hops, outbound_hops)
+        elif inbound_hops is not None:
+            best_hops = inbound_hops
+        elif outbound_hops is not None:
+            best_hops = outbound_hops
+
+        if best_hops is not None:
+            hop_score = max(0.0, 1.0 - best_hops * 0.25)
+        else:
+            hop_score = 0.5  # unknown — neutral
+
+        sig = path_significance if path_significance is not None else 0.5
+
+        return hop_score * hop_weight + sig * path_sig_weight
 
     @staticmethod
     def compute_message_hash(

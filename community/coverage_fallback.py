@@ -4,25 +4,41 @@ import asyncio
 import logging
 import random
 import time
+from dataclasses import dataclass
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Delay parameters
-BASE_DELAY_MS = 2000  # Maximum delay window
-MIN_DELAY_MS = 100  # Even highest-scored bot waits a bit
-MAX_JITTER_MS = 200  # Random jitter to prevent ties
+# Delay parameters (used when no ScoringConfig is provided)
+BASE_DELAY_MS = 2000
+MIN_DELAY_MS = 100
+MAX_JITTER_MS = 200
 
 # Score degradation
-DEGRADE_AFTER_SECONDS = 3600  # Start degrading after 1 hour without coordinator
-DEGRADE_TARGET = 0.5  # Degrade toward neutral midpoint
+DEGRADE_AFTER_SECONDS = 3600
+DEGRADE_TARGET = 0.5
+
+
+@dataclass
+class _DefaultConfig:
+    """Fallback constants when no ScoringConfig is injected."""
+    base_delay_ms: int = BASE_DELAY_MS
+    min_delay_ms: int = MIN_DELAY_MS
+    max_jitter_ms: int = MAX_JITTER_MS
+    degrade_after_seconds: int = DEGRADE_AFTER_SECONDS
+    degrade_target: float = DEGRADE_TARGET
+    degrade_window_seconds: int = 86400
+    hop_weight: float = 0.6
+    path_sig_weight: float = 0.4
 
 
 class CoverageFallback:
     """Fallback response timing based on cached coverage score."""
 
-    def __init__(self):
+    def __init__(self, scoring_config=None):
         self.cached_score: float = 0.5
         self.last_coordinator_contact: float = time.time()
+        self._cfg = scoring_config if scoring_config is not None else _DefaultConfig()
 
     def update_score(self, score: float):
         """Update cached score from coordinator heartbeat."""
@@ -33,12 +49,14 @@ class CoverageFallback:
     def effective_score(self) -> float:
         """Get the effective score, degraded if coordinator hasn't been contacted recently."""
         elapsed = time.time() - self.last_coordinator_contact
-        if elapsed <= DEGRADE_AFTER_SECONDS:
+        if elapsed <= self._cfg.degrade_after_seconds:
             return self.cached_score
 
-        # Linearly degrade toward DEGRADE_TARGET over 24 hours
-        degrade_progress = min(1.0, (elapsed - DEGRADE_AFTER_SECONDS) / 86400)
-        return self.cached_score + (DEGRADE_TARGET - self.cached_score) * degrade_progress
+        degrade_progress = min(
+            1.0,
+            (elapsed - self._cfg.degrade_after_seconds) / self._cfg.degrade_window_seconds,
+        )
+        return self.cached_score + (self._cfg.degrade_target - self.cached_score) * degrade_progress
 
     def compute_delay_ms(self) -> int:
         """Compute response delay based on effective score.
@@ -49,8 +67,34 @@ class CoverageFallback:
           Score 0.0 → ~2100-2300ms
         """
         score = self.effective_score
-        delay = BASE_DELAY_MS * (1.0 - score) + MIN_DELAY_MS
-        jitter = random.randint(0, MAX_JITTER_MS)
+        delay = self._cfg.base_delay_ms * (1.0 - score) + self._cfg.min_delay_ms
+        jitter = random.randint(0, self._cfg.max_jitter_ms)
+        return int(delay + jitter)
+
+    def compute_delay_ms_with_signal(
+        self,
+        hops: Optional[int],
+        outbound_hops: Optional[int],
+        path_significance: Optional[float],
+    ) -> int:
+        """Compute delay blending per-message proximity with cached coverage score.
+
+        Uses the same proximity formula as the coordinator bid so the nearest
+        bot wins the race when coordinator is unreachable.
+        """
+        from .coordinator_client import CoordinatorClient
+
+        proximity = CoordinatorClient.compute_sender_proximity_score(
+            inbound_hops=hops,
+            outbound_hops=outbound_hops,
+            path_significance=path_significance,
+            hop_weight=self._cfg.hop_weight,
+            path_sig_weight=self._cfg.path_sig_weight,
+        )
+        # Blend per-message proximity (70%) with cached coverage (30%)
+        blended = proximity * 0.7 + self.effective_score * 0.3
+        delay = self._cfg.base_delay_ms * (1.0 - blended) + self._cfg.min_delay_ms
+        jitter = random.randint(0, self._cfg.max_jitter_ms)
         return int(delay + jitter)
 
     async def wait_before_responding(self) -> float:
@@ -63,6 +107,22 @@ class CoverageFallback:
         logger.info(
             f"Fallback mode: waiting {delay_ms}ms "
             f"(score={self.effective_score:.2f})"
+        )
+        await asyncio.sleep(delay_s)
+        return delay_s
+
+    async def wait_before_responding_with_signal(
+        self,
+        hops: Optional[int],
+        outbound_hops: Optional[int],
+        path_significance: Optional[float],
+    ) -> float:
+        """Signal-aware fallback delay. Returns seconds waited."""
+        delay_ms = self.compute_delay_ms_with_signal(hops, outbound_hops, path_significance)
+        delay_s = delay_ms / 1000.0
+        logger.info(
+            f"Fallback mode (signal-aware): waiting {delay_ms}ms "
+            f"(hops={hops}, out_hops={outbound_hops}, path_sig={path_significance})"
         )
         await asyncio.sleep(delay_s)
         return delay_s

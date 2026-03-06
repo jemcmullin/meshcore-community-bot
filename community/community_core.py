@@ -24,10 +24,11 @@ if _bot_path not in sys.path:
 from modules.commands.base_command import BaseCommand
 from modules.core import MeshCoreBot
 
-from .config import CoordinatorConfig
+from .config import CoordinatorConfig, ScoringConfig
 from .coordinator_client import CoordinatorClient
 from .coverage_fallback import CoverageFallback
 from .message_interceptor import MessageInterceptor
+from .network_observer import NetworkObserver
 from .packet_reporter import PacketReporter
 
 logger = logging.getLogger(__name__)
@@ -40,8 +41,15 @@ class CommunityBot(MeshCoreBot):
         # Initialize the base bot
         super().__init__(config_file)
 
+        # Metrics counters (must be set before MessageInterceptor is created)
+        self.messages_processed_count: int = 0
+        self.messages_responded_count: int = 0
+
         # Load coordinator config
         self.coordinator_config = CoordinatorConfig.from_env_and_config(self.config)
+
+        # Load scoring config
+        self.scoring_config = ScoringConfig.from_env_and_config(self.config)
 
         # Initialize coordinator client
         self.coordinator = CoordinatorClient(
@@ -51,8 +59,11 @@ class CommunityBot(MeshCoreBot):
             registration_key=self.coordinator_config.registration_key,
         )
 
-        # Initialize fallback
-        self.coverage_fallback = CoverageFallback()
+        # Initialize fallback with scoring config
+        self.coverage_fallback = CoverageFallback(scoring_config=self.scoring_config)
+
+        # Initialize network observer
+        self.network_observer = NetworkObserver(self.db_manager)
 
         # Initialize packet reporter
         self.packet_reporter = PacketReporter(
@@ -61,12 +72,13 @@ class CommunityBot(MeshCoreBot):
             batch_max_size=self.coordinator_config.batch_max_size,
         )
 
-        # Install message interceptor (patches send_response)
+        # Install message interceptor (patches send_response + process_message)
         self.message_interceptor = MessageInterceptor(
             bot=self,
             coordinator=self.coordinator,
             fallback=self.coverage_fallback,
             reporter=self.packet_reporter,
+            network_observer=self.network_observer,
         )
 
         # Load community-specific commands
