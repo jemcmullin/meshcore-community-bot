@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install deps from submodule's requirements.txt (deps only — NOT the package).
 # The source tree is used directly via sys.path insert in community_core.py,
 # so installing meshcore-bot as a package would create a shadow conflict.
+# Use 'make build' / 'make up' instead of invoking docker compose directly —
+# the Makefile ensures the submodule is initialised first.
 COPY meshcore-bot/requirements.txt meshcore-bot/requirements.txt
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r meshcore-bot/requirements.txt \
