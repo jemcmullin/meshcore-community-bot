@@ -115,6 +115,25 @@ class MessageInterceptor:
         # Get path metrics for proximity scoring
         outbound_hops, path_significance = await self._get_path_metrics(message)
 
+        # Compute and log the proximity score that will be sent to the coordinator
+        from .coordinator_client import CoordinatorClient as _CC
+        proximity_score = _CC.compute_sender_proximity_score(
+            inbound_hops=message.hops,
+            outbound_hops=outbound_hops,
+            path_significance=path_significance,
+        )
+        path_sig_str = f"{path_significance:.2f}" if path_significance is not None else "N/A"
+        logger.info(
+            f"Coordinator bid [{content_prefix}] "
+            f"in_hops={message.hops} out_hops={outbound_hops} "
+            f"path_sig={path_sig_str} proximity={proximity_score:.3f} "
+            f"snr={message.snr} rssi={message.rssi} path={message.path!r}"
+        )
+        logger.debug(
+            f"Scoring detail sender={message.sender_pubkey or 'unknown'!r:.12} "
+            f"hash={message_hash[:12]} channel={message.channel}"
+        )
+
         should_respond = await self.coordinator.should_respond(
             message_hash=message_hash,
             sender_pubkey=message.sender_pubkey or "",

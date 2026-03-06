@@ -41,6 +41,9 @@ class CommunityBot(MeshCoreBot):
         # Initialize the base bot
         super().__init__(config_file)
 
+        # Apply the same colored formatter to all community.* loggers
+        self._setup_community_logging()
+
         # Metrics counters (must be set before MessageInterceptor is created)
         self.messages_processed_count: int = 0
         self.messages_responded_count: int = 0
@@ -89,6 +92,40 @@ class CommunityBot(MeshCoreBot):
         self._registered_with_real_key = False
 
         self.logger.info("Community bot initialized with coordinator support")
+
+    def _setup_community_logging(self):
+        """Attach the same colored formatter used by MeshCoreBot to all community.* loggers."""
+        import colorlog
+
+        # Grab formatter from the MeshCoreBot logger if available
+        meshcore_logger = logging.getLogger("MeshCoreBot")
+        existing_formatter = None
+        for handler in meshcore_logger.handlers:
+            if handler.formatter is not None:
+                existing_formatter = handler.formatter
+                break
+
+        if existing_formatter is None:
+            existing_formatter = colorlog.ColoredFormatter(
+                "%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+                log_colors={
+                    "DEBUG": "cyan",
+                    "INFO": "green",
+                    "WARNING": "yellow",
+                    "ERROR": "red",
+                    "CRITICAL": "red,bg_white",
+                },
+            )
+
+        community_logger = logging.getLogger("community")
+        community_logger.setLevel(meshcore_logger.level or logging.DEBUG)
+        community_logger.propagate = False
+
+        if not community_logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(existing_formatter)
+            community_logger.addHandler(handler)
 
     def _load_community_commands(self):
         """Load community-specific commands into the plugin system.

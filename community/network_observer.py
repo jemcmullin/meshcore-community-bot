@@ -182,11 +182,29 @@ class NetworkObserver:
         last_node = path_nodes[-1]
 
         for node_id in path_nodes:
+            prev_total = self._node_counts.get(node_id, {}).get("total", 0)
             if node_id not in self._node_counts:
                 self._node_counts[node_id] = {"total": 0, "last_hop": 0}
             self._node_counts[node_id]["total"] += 1
             if node_id == last_node:
                 self._node_counts[node_id]["last_hop"] += 1
+
+            # Log when a node first crosses the minimum observation threshold
+            new_total = self._node_counts[node_id]["total"]
+            if prev_total < self.min_observations <= new_total:
+                sig = self.get_node_significance(node_id)
+                role = "private feeder" if sig < 0.3 else ("shared infra" if sig > 0.7 else "mixed")
+                logger.info(
+                    f"Repeater {node_id}: significance={sig:.2f} ({role}) "
+                    f"after {new_total} observations "
+                    f"[last_hop={self._node_counts[node_id]['last_hop']}]"
+                )
+            else:
+                logger.debug(
+                    f"Observed {node_id}: total={self._node_counts[node_id]['total']} "
+                    f"last_hop={self._node_counts[node_id]['last_hop']} "
+                    f"sig={self.get_node_significance(node_id):.2f}"
+                )
 
         self._obs_since_save += 1
         if self._obs_since_save >= _SAVE_THROTTLE:
@@ -231,7 +249,13 @@ class NetworkObserver:
         if not path_nodes:
             return None
         sigs = [self.get_node_significance(n) for n in path_nodes]
-        return sum(sigs) / len(sigs)
+        result = sum(sigs) / len(sigs)
+        logger.debug(
+            f"Path significance: {result:.2f} "
+            f"nodes={path_nodes} "
+            f"per-node={[f'{n}:{s:.2f}' for n, s in zip(path_nodes, sigs)]}"
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Helpers
