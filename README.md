@@ -76,15 +76,17 @@ cp config.ini.example config.ini
 ### 4. Start the bot
 
 ```bash
-make up
+make start
 ```
 
-> `make up` initialises the git submodule automatically before building. If you prefer to call docker compose directly, run `git submodule update --init` first.
+This starts the bot and immediately tails the logs. Ctrl+C stops the log tail but leaves the bot running.
+
+> Or use `make up` to start in the background without attaching to logs. `make up` and `make start` both initialise the git submodule automatically.
 
 ### 5. Check the logs
 
 ```bash
-docker compose logs -f
+make logs
 ```
 
 You should see:

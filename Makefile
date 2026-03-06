@@ -1,4 +1,4 @@
-.PHONY: build up down logs pull submodule
+.PHONY: build up down logs pull submodule start
 
 # Ensure submodule is initialized before any docker operation
 submodule:
@@ -15,6 +15,8 @@ down:
 
 logs:
 	docker compose logs -f
+
+start: up logs
 
 pull:
 	git pull
