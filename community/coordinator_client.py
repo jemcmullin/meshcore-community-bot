@@ -9,7 +9,7 @@ from typing import Optional
 
 import httpx
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("CommunityBot")
 
 
 class CoordinatorClient:

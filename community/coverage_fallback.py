@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("CommunityBot")
 
 # Delay parameters (used when no ScoringConfig is provided)
 BASE_DELAY_MS = 2000

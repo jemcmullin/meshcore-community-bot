@@ -20,7 +20,7 @@ from typing import Optional
 from .coordinator_client import CoordinatorClient
 from .coverage_fallback import CoverageFallback
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("CommunityBot")
 
 
 class MessageInterceptor:

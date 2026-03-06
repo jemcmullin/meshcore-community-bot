@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("CommunityBot")
 
 _DEFAULT_WINDOW_DAYS = 7
 _DEFAULT_MIN_OBS = 10

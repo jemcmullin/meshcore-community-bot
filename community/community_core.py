@@ -31,7 +31,7 @@ from .message_interceptor import MessageInterceptor
 from .network_observer import NetworkObserver
 from .packet_reporter import PacketReporter
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("CommunityBot")
 
 
 class CommunityBot(MeshCoreBot):
@@ -118,7 +118,7 @@ class CommunityBot(MeshCoreBot):
                 },
             )
 
-        community_logger = logging.getLogger("community")
+        community_logger = logging.getLogger("CommunityBot")
         community_logger.setLevel(meshcore_logger.level or logging.DEBUG)
         community_logger.propagate = False
 
