@@ -125,7 +125,7 @@ class NetworkObserver:
         try:
             rows = self.db_manager.execute_query(
                 """
-                SELECT node_id, SUM(total_seen), SUM(last_hop)
+                SELECT node_id, SUM(total_seen) AS total_seen, SUM(last_hop) AS last_hop
                 FROM repeater_daily_stats
                 WHERE date_bucket >= ?
                 GROUP BY node_id
@@ -133,7 +133,10 @@ class NetworkObserver:
                 (cutoff,),
             )
             if rows:
-                for node_id, total, last_hop in rows:
+                for row in rows:
+                    node_id = row["node_id"]
+                    total = row["total_seen"]
+                    last_hop = row["last_hop"]
                     self._node_counts[node_id] = {
                         "total": total or 0,
                         "last_hop": last_hop or 0,
