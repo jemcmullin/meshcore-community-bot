@@ -17,6 +17,7 @@ Provides:
 
 import configparser
 import logging
+import math
 import os
 import time
 from pathlib import Path
@@ -74,6 +75,7 @@ class NetworkObserver:
         self.summary_interval_seconds = int(
             _get("summary_interval_seconds", _DEFAULT_SUMMARY_INTERVAL)
         )
+
         logger.info(
             f"NetworkObserver config: window={self.window_days}d "
             f"min_obs={self.min_observations} "
@@ -254,6 +256,15 @@ class NetworkObserver:
         """Return significance of a single node (0=private feeder, 1=shared infra).
 
         Returns 0.5 if insufficient data.
+
+        Score is multiplicative:
+          feeder_penalty = 1 - (last_hop / total)  — near 0 for dedicated feeders
+          freq_sig       = log(total+1) / log(max_total+1)  — relative to busiest node
+          result         = feeder_penalty * freq_sig
+
+        Frequency is log-normalized against the most-observed node in the current
+        window, so scores automatically adapt to network traffic volume with no
+        fixed saturation parameter.
         """
         counts = self._node_counts.get(node_id)
         if not counts or counts["total"] < self.min_observations:
@@ -261,8 +272,12 @@ class NetworkObserver:
 
         total = counts["total"]
         last_hop = counts["last_hop"]
-        # Fraction of appearances where node was NOT the last hop
-        return 1.0 - (last_hop / total)
+        feeder_penalty = 1.0 - (last_hop / total)
+
+        max_total = max((c["total"] for c in self._node_counts.values()), default=total)
+        freq_sig = math.log(total + 1) / math.log(max_total + 1) if max_total > 0 else 1.0
+
+        return feeder_penalty * freq_sig
 
     def compute_path_significance(self, path_nodes: list[str]) -> Optional[float]:
         """Mean significance across all nodes in path.
