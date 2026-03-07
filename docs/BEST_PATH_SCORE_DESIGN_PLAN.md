@@ -1,279 +1,352 @@
-# Design Plan: Best-Path Scoring (from `best-path-score` branch)
+# Design Plan: Best-Path Delivery Score
 
-## Overview
+## Goals
 
-The `best-path-score` branch adds per-message proximity scoring so the coordinator (and fallback mode) can pick the bot with the best-known path to the _sender_, not just the highest overall coverage score. It does this by:
+**Goal 1 — Submodule data only.** All scoring inputs come exclusively from tables already tracked and persisted by the `meshcore-bot` submodule. No community-side learning, no new tables, no background observers.
 
-1. Learning which repeater nodes are local/private feeders vs. genuine shared infrastructure (**NetworkObserver**).
-2. Querying the DB for the bot's stored outbound hop count to the sender (**outbound_hops**).
-3. Blending hop count + path significance into a single `sender_proximity_score` sent to the coordinator.
-4. Using that same blend for fallback delay when coordinator is unreachable.
+**Goal 2 — 0-1 delivery score.** Each bot computes a single `delivery_score ∈ [0, 1]` that represents the likelihood of a response from _this bot_ successfully reaching the sender, given known mesh topology and this bot's proximity to that sender. That score is sent to the coordinator as the primary bidding field. The bot with the highest score responds; others suppress.
 
 All changes are confined to `community/`. The `meshcore-bot/` submodule is **not touched**.
 
 ---
 
-## What Changes (File by File)
+## Data Sources (meshcore-bot submodule only)
 
-### New Files
+All four scoring inputs read from tables created and populated by the submodule. No writes, no new tables.
 
-#### `community/network_observer.py`
+### `complete_contact_tracking`
 
-Passive observer that feeds on **every** channel message (not just commands). For each message:
+- **`out_path_len`** — stored outbound hop count to this sender (set when the bot last sent to them).
+- **`public_key`** — match by 8-char prefix of `message.sender_pubkey`.
+- Provides: `outbound_hops`.
 
-- Parses the path string into a list of repeater node IDs.
-- Records which nodes appear, and whether each was the _last hop_ before this bot.
-- A node that is always the last hop is a co-located/private feeder (low significance).
-- A node that appears at varying positions is genuine shared infrastructure (high significance).
+### `observed_paths`
 
-Stores daily aggregates in a new `repeater_daily_stats` DB table (rolling window, default 7 days). Provides:
+- **`observation_count`** — how many times a message path from this sender has been independently confirmed.
+- **`last_seen`** — timestamp of the most recent confirmed path, used to compute path age.
+- **`from_prefix`** — 2-char prefix of the sender node; matched against sender pubkey prefix.
+- **`packet_type`** — filter to `!= 'ADVERT'` (command/message paths only).
+- Provides: `path_reliability`, `path_freshness`.
 
-- `observe_path(path_nodes)` — called for each channel message.
-- `get_node_significance(node_id) → float (0-1)` — 0=always last hop (local feeder), 1=never last hop (shared infra).
-- `compute_path_significance(path_nodes) → float | None` — mean significance across all nodes in a path.
+### `mesh_connections`
 
-Config loaded from `scoring_observer_config.ini` `[NetworkObserver]` section or `OBSERVER_*` env vars.
+- **`to_prefix`** — a repeater node in the inbound path.
+- **`from_prefix`** — an upstream node that routes through `to_prefix` (distinct count = fan-in).
+- Fan-in of each node in `message.path` reveals whether it is private infrastructure (few upstream sources) or shared backbone (many upstream sources).
+- Provides: `infrastructure_score`.
 
-#### `community/scoring_observer_config.ini`
+### Live message fields (not DB)
 
-Central config file for both scoring and repeater-learning parameters. Contains two sections:
-
-- `[Scoring]` — `hop_weight`, `path_sig_weight`, delay timing, degradation settings.
-- `[NetworkObserver]` — `window_days`, `min_observations`, cleanup/summary intervals.
-
-All values can be overridden by `SCORING_*` and `OBSERVER_*` environment variables.
+- **`message.hops`** — inbound hop count on the arriving packet. Used as a fallback when `out_path_len` is unknown and as a cross-check when both are available.
+- **`message.path`** — the literal path string (e.g. `"98,11,A4 (2 hops via Flood)"`). Parsed into node prefixes for the `mesh_connections` fan-in query.
 
 ---
 
+## Scoring Formula
+
+```
+# Component 1 — proximity (hop count)
+best_hops  = min(inbound_hops, outbound_hops)  -- use whichever is available; min if both
+hop_score  = max(0.0, 1.0 - best_hops * 0.25) -- 0 hops=1.0, 4 hops=0.0, saturates at 0
+
+# Component 2 — infrastructure quality of inbound path
+#   For each node X in message.path, count distinct upstream nodes in mesh_connections
+fan_in           = COUNT(DISTINCT from_prefix) WHERE to_prefix = X
+infra_score_X    = min(1.0, fan_in / 10.0)    -- saturates at 10 distinct feeders
+infrastructure   = mean(infra_score_X for X in path nodes)
+
+# Component 3 — path reliability (confirmed observations to this sender)
+path_reliability = min(1.0, observation_count / 20.0)  -- saturates at 20
+
+# Component 4 — path freshness (how recently was this path confirmed)
+path_freshness   = exp(-age_hours / 6.0)               -- half-life ~4h; ~5% at 18h; ~0 at 36h+
+
+# Final score
+delivery_score = hop_score        * 0.50
+              + infrastructure    * 0.25
+              + path_reliability  * 0.15
+              + path_freshness    * 0.10
+```
+
+**Unknown inputs default to `0.5` (neutral) — missing data never penalises a bot.** Weights sum to 1.0. Hop count is the dominant term when data is sparse; the topology components sharpen the decision as history accumulates.
+
+---
+
+## Score Interpretation
+
+| Score range | Meaning                                                                                |
+| ----------- | -------------------------------------------------------------------------------------- |
+| 0.75 – 1.0  | Excellent: close, well-confirmed path through shared infrastructure, recently verified |
+| 0.50 – 0.75 | Good: moderate distance or moderate confidence                                         |
+| 0.25 – 0.50 | Marginal: far, or stale, or only private-feeder paths observed                         |
+| 0.0 – 0.25  | Poor: many hops + no confirmed path data                                               |
+
+A score of exactly `0.5` means the bot has no data at all for this sender — pure neutral.
+
+---
+
+## What Changes (File by File)
+
+### Files Removed vs. Current Branch
+
+| File                                    | Status       | Reason                                                            |
+| --------------------------------------- | ------------ | ----------------------------------------------------------------- |
+| `community/network_observer.py`         | **Remove**   | Replaced entirely by `mesh_connections` fan-in query              |
+| `community/scoring_observer_config.ini` | **Simplify** | Remove `[NetworkObserver]` section; keep `[Scoring]` weights only |
+
+### New Files
+
+#### (none)
+
 ### Modified Files
+
+#### `community/scoring_observer_config.ini`
+
+Remove the `[NetworkObserver]` section entirely. The `[Scoring]` section remains as the configurable weight knobs:
+
+```ini
+[Scoring]
+hop_weight          = 0.50   ; dominant — direct proximity signal
+infra_weight        = 0.25   ; infrastructure quality of inbound path
+reliability_weight  = 0.15   ; how many confirmed paths to this sender
+freshness_weight    = 0.10   ; how recently that path was confirmed
+base_delay_ms       = 2000   ; fallback: max delay window (ms)
+min_delay_ms        = 100    ; fallback: floor delay even for best bot
+max_jitter_ms       = 200    ; fallback: random jitter to break ties
+```
+
+All values overridable by `SCORING_*` env vars.
+
+---
 
 #### `community/config.py`
 
-**Add** a new `ScoringConfig` dataclass alongside the existing `CoordinatorConfig`:
+`ScoringConfig` gains two new weight fields to replace `path_sig_weight`:
 
 ```python
 @dataclass
 class ScoringConfig:
-    hop_weight: float = 0.6          # weight for hop count in proximity score
-    path_sig_weight: float = 0.4     # weight for path significance
-    base_delay_ms: int = 2000        # max fallback delay window
-    min_delay_ms: int = 100          # floor delay even for best-scored bot
-    max_jitter_ms: int = 200         # random jitter to prevent ties
-    degrade_after_seconds: int = 3600
-    degrade_target: float = 0.5
-    degrade_window_seconds: int = 86400
-
-    @classmethod
-    def from_env_and_config(cls, config) -> "ScoringConfig": ...
+    hop_weight:          float = 0.50   # weight for hop count
+    infra_weight:        float = 0.25   # weight for infrastructure score (mesh_connections fan-in)
+    reliability_weight:  float = 0.15   # weight for path_reliability (observed_paths obs count)
+    freshness_weight:    float = 0.10   # weight for path_freshness (observed_paths last_seen age)
+    base_delay_ms:       int   = 2000
+    min_delay_ms:        int   = 100
+    max_jitter_ms:       int   = 200
 ```
 
-`from_env_and_config` reads from the `[Scoring]` section of the provided config (falls back to defaults if section absent) and then checks `SCORING_*` env vars which take precedence. Since `community_core.py` passes `self.config` (the bot's `config.ini`) which doesn't have a `[Scoring]` section, defaults are used unless overridden by env vars — this is the intended behaviour for most deployers.
+`path_sig_weight` is removed. `from_env_and_config` reads the `[Scoring]` section of the bot's `config.ini` then applies `SCORING_*` env var overrides.
 
-**Non-breaking:** `CoordinatorConfig` is unchanged. `ScoringConfig` is purely additive.
+**Non-breaking:** `CoordinatorConfig` is unchanged.
 
 ---
 
 #### `community/coordinator_client.py`
 
-Three changes:
+Two changes:
 
-1. **Lazy `httpx.AsyncClient` initialization.** The current branch creates the client eagerly in `__init__` (before the asyncio event loop is running), which can cause event loop binding issues. Replace with a `_ensure_client()` coroutine that creates it on first use. The `close()` method already handles cleanup.
+1. **Rename and expand `compute_sender_proximity_score` → `compute_delivery_score`.**
 
    ```python
-   # Before (current branch):
-   self._client = httpx.AsyncClient(base_url=..., ...)
-
-   # After:
-   self._client: Optional[httpx.AsyncClient] = None
-
-   async def _ensure_client(self) -> httpx.AsyncClient:
-       if self._client is None:
-           self._client = httpx.AsyncClient(base_url=..., ...)
-       return self._client
+   @staticmethod
+   def compute_delivery_score(
+       inbound_hops:      Optional[int],
+       outbound_hops:     Optional[int],
+       infrastructure:    Optional[float],   # from mesh_connections fan-in
+       path_reliability:  Optional[float],   # from observed_paths obs count
+       path_freshness:    Optional[float],   # from observed_paths age
+       w_hops:            float = 0.50,
+       w_infra:           float = 0.25,
+       w_reliability:     float = 0.15,
+       w_freshness:       float = 0.10,
+   ) -> float:
+       best_hops = min(h for h in [inbound_hops, outbound_hops] if h is not None) \
+                   if any(h is not None for h in [inbound_hops, outbound_hops]) else None
+       hop_score = max(0.0, 1.0 - best_hops * 0.25) if best_hops is not None else 0.5
+       infra     = infrastructure   if infrastructure   is not None else 0.5
+       rel       = path_reliability if path_reliability is not None else 0.5
+       fresh     = path_freshness   if path_freshness   is not None else 0.5
+       return hop_score * w_hops + infra * w_infra + rel * w_reliability + fresh * w_freshness
    ```
 
-   All callers switch from `self._client.post(...)` to `client = await self._ensure_client(); client.post(...)`.
+   `parse_path_nodes` remains unchanged (already implemented, used for the `mesh_connections` query in `_get_path_metrics`).
 
-2. **Add `parse_path_nodes(path_string) → list` static method.** Extracts repeater node IDs from a path string like `"98,11,a4 (2 hops via Flood)"` → `["98", "11", "A4"]`. Handles "Direct", empty/None, and variable-length (multi-byte) IDs. Used by `NetworkObserver` and `MessageInterceptor`.
+2. **Extend `should_respond()` signature** — replace `path_significance` with `infrastructure`, `path_reliability`, `path_freshness` optional kwargs. The pre-computed `delivery_score` becomes the coordinator payload field (renamed from `sender_proximity_score`). SNR and RSSI are removed from the payload entirely — they are not scoring inputs.
 
-3. **Add `compute_sender_proximity_score(hops, outbound_hops, path_significance, hop_weight, path_sig_weight) → float` static method** plus **extend `should_respond()` signature** with `outbound_hops`, `path_significance`, `hop_weight`, `path_sig_weight` optional kwargs. The pre-computed `sender_proximity_score` is included in the coordinator payload as the primary bidding field; SNR/RSSI remain for analytics only.
+```python
+payload["delivery_score"] = self.compute_delivery_score(
+    inbound_hops=receiver_hops,
+    outbound_hops=outbound_hops,
+    infrastructure=infrastructure,
+    path_reliability=path_reliability,
+    path_freshness=path_freshness,
+    ...scoring_config weights...
+)
+```
 
-   ```
-   proximity = hop_score * hop_weight + path_sig * path_sig_weight
-   hop_score = max(0, 1 - best_hops * 0.25)
-   best_hops = min(inbound_hops, outbound_hops) if both known
-   ```
-
-**Non-breaking:** All new `should_respond()` params are optional with safe defaults. Existing callers work unchanged.
+**Non-breaking:** All new `should_respond()` params default to `None`. `delivery_score` at `0.5` is neutral — the coordinator treats it as a no-preference bid if all bots send `0.5`.
 
 ---
 
 #### `community/coverage_fallback.py`
 
-Two changes:
-
-1. **Accept `scoring_config: Optional[ScoringConfig] = None`** in `__init__`. If provided, use `self.config` attributes instead of the current module-level constants (`BASE_DELAY_MS`, etc.). If not provided, fall back to a small `_DefaultConfig` dataclass with the same values — so existing `CoverageFallback()` callsites keep working.
-
-2. **Add two new methods:**
-   - `compute_delay_ms_with_signal(hops, outbound_hops, path_significance) → int` — blends per-message proximity with the cached coverage score to compute delay. Used in fallback mode to ensure the nearest bot wins the race.
-   - `wait_before_responding_with_signal(hops, outbound_hops, path_significance) → float` — awaits the signal-aware delay and returns seconds waited.
-
-**Non-breaking:** `__init__` signature change is backward-compatible (`scoring_config=None`). Old constants remain as module-level defaults. `wait_before_responding()` is unchanged.
+Update `compute_delay_ms_with_signal` and `wait_before_responding_with_signal` to accept `infrastructure`, `path_reliability`, `path_freshness` in place of `path_significance`. Internally calls `compute_delivery_score` to produce the delay factor. No structural changes.
 
 ---
 
 #### `community/message_interceptor.py`
 
-Four additions (three patches + path metrics):
+Three changes:
 
-1. **Accept `network_observer: Optional[NetworkObserver] = None`** in `__init__` and install **two additional** `MethodType` patches on `MessageHandler`:
-   - **`handle_rf_log_data` (primary observation source)** — fires on every raw RF frame. `routing_info['path_nodes']` is already decoded by the original handler before it appends to `recent_rf_data`. The wrapper records `t_before = time.time()` before calling the original, then checks `rf_list[-1].timestamp >= t_before` to identify the newly-appended entry. A length snapshot is not used because the internal cleanup inside `handle_rf_log_data` can shrink the list, so `len` can decrease even when a new entry was added. No duplicate decode and no deep copy needed — asyncio is single-threaded so the list cannot be mutated between the awaited return and the read. **DIRECT packets (overheard DMs) are skipped** — the bot is a bystander, and nearby DMs naturally route through the same local feeder, which would artificially inflate that feeder's significance score. Significance scoring is only meaningful for flood traffic. This fires for all other packet types including ADVERT and non-command TXT_MSG that never reach `process_message`.
+1. **Remove `network_observer` parameter and all related code.** The `handle_rf_log_data` patch is not installed. `_observing_process_message` remains for `messages_processed_count` only (counter). `restore()` only needs to restore `send_response` and `process_message`.
 
-   - **`process_message` (secondary — counter only)** — wraps the original solely to increment `self.bot.messages_processed_count`. Path observation is **not** performed here to avoid double-counting: `handle_rf_log_data` already observes the same path nodes for every packet that eventually reaches `process_message`.
+2. **Replace `_get_path_metrics` with a 4-output version** that reads exclusively from submodule tables:
 
-   `restore()` must restore all three patched methods.
+   ```python
+   async def _get_path_metrics(self, message):
+       """
+       Returns (outbound_hops, infrastructure, path_reliability, path_freshness).
+       All values may be None; None is handled as neutral (0.5) in scoring.
+       Sources: complete_contact_tracking, mesh_connections, observed_paths.
+       """
+       sender_pubkey  = message.sender_pubkey or ""
+       sender_prefix8 = sender_pubkey[:8].upper() if sender_pubkey else ""
+       sender_prefix2 = sender_pubkey[:2].lower()  if sender_pubkey else ""
+       path_nodes = CoordinatorClient.parse_path_nodes(message.path)  # ["98", "11", "A4"]
 
-2. **Add `_observing_handle_rf_log_data(event, metadata)`** — primary observation patch (see above).
+       outbound_hops     = None
+       infrastructure    = None
+       path_reliability  = None
+       path_freshness    = None
 
-3. **Add `_observing_process_message(message)`** — increments `messages_processed_count` only; does **not** call `observe_path`.
+       # --- outbound_hops from complete_contact_tracking ---
+       if sender_prefix8:
+           rows = await self.bot.db_manager.aexecute_query(
+               """SELECT out_path_len FROM complete_contact_tracking
+                  WHERE public_key LIKE ? AND out_path_len IS NOT NULL
+                  ORDER BY last_heard DESC LIMIT 1""",
+               (sender_prefix8 + "%",), fetch=True,
+           )
+           if rows:
+               outbound_hops = int(rows[0][0])
 
-4. **Add `_get_path_metrics(message) → (outbound_hops, path_significance)`** — queries the local DB:
-   - `outbound_hops`: from `complete_contact_tracking.out_path_len` for this sender's pubkey.
-   - `path_significance`: calls `network_observer.compute_path_significance(path_nodes)`.
-     Both return `None` on error or missing data (handled gracefully by the scoring math). Called in `_coordinated_send_response()` before the coordinator bid.
+       # --- infrastructure from mesh_connections fan-in ---
+       if path_nodes:
+           node_lower = [n.lower()[:2] for n in path_nodes]
+           placeholders = ",".join("?" * len(node_lower))
+           rows = await self.bot.db_manager.aexecute_query(
+               f"""SELECT to_prefix, COUNT(DISTINCT from_prefix) AS fan_in
+                   FROM mesh_connections
+                   WHERE to_prefix IN ({placeholders})
+                   GROUP BY to_prefix""",
+               tuple(node_lower), fetch=True,
+           )
+           if rows:
+               scores = [min(1.0, (r[1] or 0) / 10.0) for r in rows]
+               infrastructure = sum(scores) / len(scores)
 
-5. **Fallback path**: `await self.fallback.wait_before_responding_with_signal(hops=..., outbound_hops=..., path_significance=...)`.
+       # --- path_reliability + path_freshness from observed_paths ---
+       if sender_prefix2:
+           rows = await self.bot.db_manager.aexecute_query(
+               """SELECT observation_count,
+                         CAST((julianday('now') - julianday(last_seen)) * 24 AS REAL)
+                  FROM observed_paths
+                  WHERE from_prefix = ? AND packet_type != 'ADVERT'
+                  ORDER BY observation_count DESC LIMIT 1""",
+               (sender_prefix2,), fetch=True,
+           )
+           if rows:
+               obs_count, age_hours = rows[0]
+               path_reliability = min(1.0, (obs_count or 1) / 20.0)
+               path_freshness   = math.exp(-(age_hours or 999) / 6.0)
 
-6. **Metrics**: `self.bot.messages_responded_count` incremented in `_coordinated_send_response`; `messages_processed_count` incremented in `_observing_process_message`.
+       return outbound_hops, infrastructure, path_reliability, path_freshness
+   ```
 
-**Non-breaking concern:** `network_observer=None` default is additive. When `None`, the `handle_rf_log_data` patch is not installed at all. `_observing_process_message` still runs (for the counter) but skips observation. `_get_path_metrics` returns `(None, None)`.
+   All three queries are wrapped in try/except; any failure returns `None` for that component.
+
+3. **Update `_coordinated_send_response`** to unpack the 4-tuple and pass all four components to `compute_delivery_score` and `should_respond`.
+
+**Non-breaking:** `network_observer` param removed (was optional; no external callers pass it outside `community_core.py`). `_get_path_metrics` return type changes from 2-tuple to 4-tuple — only called internally.
 
 ---
 
 #### `community/community_core.py`
 
-Wire everything together:
+Three changes from current state:
 
-1. Import `ScoringConfig` from `.config` and `NetworkObserver` from `.network_observer`.
-2. After `super().__init__()`, load `self.scoring_config = ScoringConfig.from_env_and_config(self.config)`.
-3. Create `self.network_observer = NetworkObserver(self.db_manager)`.
-4. Pass `scoring_config=self.scoring_config` to `CoverageFallback(...)`.
-5. Pass `network_observer=self.network_observer` to `MessageInterceptor(...)`.
-6. Initialize `self.messages_processed_count = 0` and `self.messages_responded_count = 0` (used by `MessageInterceptor` and heartbeat).
+1. Import `ScoringConfig` from `.config` (no `NetworkObserver` import).
+2. After `super().__init__()`: `self.scoring_config = ScoringConfig.from_env_and_config(self.config)`.
+3. Pass `scoring_config=self.scoring_config` to `CoverageFallback`.
+4. Do **not** pass `network_observer` to `MessageInterceptor` — parameter removed.
+5. Initialise `self.messages_processed_count = 0` and `self.messages_responded_count = 0`.
 
 ---
 
 ## Implementation Order (dependency-first)
 
-| Step | File                                   | Reason                                                                                                |
-| ---- | -------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| 1    | `scoring_observer_config.ini` (create) | No deps; config file for steps 2–4                                                                    |
-| 2    | `config.py` (add `ScoringConfig`)      | Needed by `coverage_fallback`, `coordinator_client`                                                   |
-| 3    | `coordinator_client.py`                | Lazy client + static methods needed by `network_observer`, `coverage_fallback`, `message_interceptor` |
-| 4    | `network_observer.py` (create)         | Needed by `message_interceptor`                                                                       |
-| 5    | `coverage_fallback.py`                 | Needs `ScoringConfig` (step 2) and `coordinator_client` static method (step 3)                        |
-| 6    | `message_interceptor.py`               | Needs `NetworkObserver` (step 4), updated `CoverageFallback` (step 5), `coordinator_client` (step 3)  |
-| 7    | `community_core.py`                    | Wires all of the above                                                                                |
+| Step | File                                    | Change                                                                            |
+| ---- | --------------------------------------- | --------------------------------------------------------------------------------- |
+| 1    | `community/scoring_observer_config.ini` | Remove `[NetworkObserver]` section; update `[Scoring]` weights                    |
+| 2    | `community/config.py`                   | Update `ScoringConfig` field names and defaults                                   |
+| 3    | `community/coordinator_client.py`       | `compute_delivery_score` (4 inputs, no SNR/RSSI); update `should_respond` payload |
+| 4    | `community/coverage_fallback.py`        | Update `wait_before_responding_with_signal` params                                |
+| 5    | `community/message_interceptor.py`      | New `_get_path_metrics` (3 DB queries); remove NetworkObserver wiring             |
+| 6    | `community/community_core.py`           | Wire `ScoringConfig`; remove `NetworkObserver` construction                       |
+| 7    | `community/network_observer.py`         | **Delete file**                                                                   |
 
 ---
 
 ## Non-Breaking Guarantees
 
-| Concern                                      | How it's handled                                                                                                                                                 |
-| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Existing commands (20+)                      | Unchanged — they call `BaseCommand.send_response()` → `CommandManager.send_response()` → interceptor. No API changes.                                            |
-| `CoverageFallback()` (no args)               | `scoring_config=None` default retains current behavior via `_DefaultConfig` with same constants.                                                                 |
-| `MessageInterceptor` (no `network_observer`) | `network_observer=None` default: `_observing_process_message` passes through; `_get_path_metrics` returns `(None, None)`.                                        |
-| `should_respond()` without new kwargs        | All new params have safe defaults. Coordinator payload gains `sender_proximity_score` (new field, coordinator ignores unknowns gracefully).                      |
-| `scoring_observer_config.ini` absent         | `NetworkObserver` and `ScoringConfig.from_env_and_config` both use hardcoded defaults.                                                                           |
-| `complete_contact_tracking` table absent     | `_get_path_metrics` wraps DB query in try/except; returns `None` on failure.                                                                                     |
-| `repeater_daily_stats` table absent          | `NetworkObserver._init_tables()` creates it on startup.                                                                                                          |
-| `meshcore-bot/` submodule                    | Zero changes required.                                                                                                                                           |
-| Coordinator protocol                         | Existing coordinator still works: `sender_proximity_score` is a new field it can optionally use; `receiver_snr`/`receiver_rssi` remain in payload for analytics. |
+| Concern                                                 | How it's handled                                                                                                                                    |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Existing commands (20+)                                 | Unchanged — `BaseCommand.send_response()` → `CommandManager.send_response()` → interceptor. No API changes.                                         |
+| `CoverageFallback()` (no args)                          | `scoring_config=None` default retains current behaviour.                                                                                            |
+| `should_respond()` without new kwargs                   | All new params default to `None`; score computed as `0.5` (neutral bid).                                                                            |
+| `complete_contact_tracking` absent or no `out_path_len` | Query returns `None`; scoring falls back to inbound hops only.                                                                                      |
+| `observed_paths` empty (new deployment)                 | Returns `None`; reliability and freshness default to neutral `0.5`.                                                                                 |
+| `mesh_connections` empty or path is "Direct"            | Path nodes list is empty; `infrastructure` stays `None` → neutral `0.5`.                                                                            |
+| `meshcore-bot/` submodule                               | Zero changes required.                                                                                                                              |
+| Coordinator protocol                                    | `delivery_score` replaces `sender_proximity_score` — coordinator treats any unknown float field as a preference score; old name ignored gracefully. |
 
 ---
 
 ## Risk Notes
 
-- **`db_manager` table whitelist** ⚠️: `meshcore-bot/modules/db_manager.py` enforces an `ALLOWED_TABLES` whitelist on `create_table()` and `drop_table()`. The three tables `NetworkObserver` needs (`repeater_node_stats`, `repeater_daily_stats`, `network_observer_meta`) are **not** in the whitelist, so calling `db_manager.create_table(...)` for them will raise `ValueError` and crash on startup.
-
-  **Fix (preferred — no submodule touch):** Replace the three `db_manager.create_table(...)` calls in `NetworkObserver._init_tables()` with raw `db_manager.execute_query("CREATE TABLE IF NOT EXISTS ...")` calls. `execute_query()` is not whitelist-gated and is already used for `CREATE INDEX` in the same method.
-
-  Tables actually created by `NetworkObserver`: `repeater_daily_stats`, `network_observer_meta`. (`repeater_node_stats` is **not** used.)
-
-  _Alternative:_ In `CommunityBot.__init__` (after `super().__init__()`), monkeypatch the class-level set:
-
-  ```python
-  self.db_manager.ALLOWED_TABLES |= {'repeater_node_stats', 'repeater_daily_stats', 'network_observer_meta'}
-  ```
-
-  This works but is more fragile if the whitelist implementation changes.
-
-- **`complete_contact_tracking` table**: The `_get_path_metrics` query assumes `out_path_len` column exists. If the submodule version of meshcore-bot doesn't populate this table, `outbound_hops` will always be `None` — scoring falls back to inbound-only, which is still an improvement over SNR-based scoring. No crash risk.
-- **`MethodType` patch on `process_message`**: The new branch uses `types.MethodType` to bind wrapper functions as instance methods on `command_manager` and `message_handler`. This is the correct Python pattern. The old branch's simpler function assignment for `send_response` works only because `send_response` is called with an explicit `self` argument in the original code — the new wrapper accounts for both styles.
-- **Event loop and `httpx.AsyncClient`**: The lazy-init fix is important and should be included even if the rest of the changes aren't — the current eager init can fail on some Python/httpx versions when `asyncio` hasn't started yet.
-- **DB write load**: `NetworkObserver.observe_path()` fires for every channel message. With daily aggregation and a `% 50` save throttle it's low overhead, but operators on very busy networks should be aware. The `cleanup_interval_seconds` and `window_days` config values can be tuned.
+- **`aexecute_query` fetch parameter**: The existing `_get_path_metrics` uses `aexecute_query(..., fetch=True)`. Verify this matches the actual signature in `db_manager.py` — if the async wrapper doesn't accept a `fetch` kwarg, use `await asyncio.to_thread(self.bot.db_manager.execute_query, ...)` instead.
+- **`observed_paths.from_prefix` is 2-char, lowercase**: Confirmed from `repeater_manager.py` schema. Use `sender_pubkey[:2].lower()` not the 8-char prefix.
+- **`complete_contact_tracking.public_key` is full pubkey, not prefix**: Query must use `LIKE ? || '%'` with the 8-char prefix, or match by exact full key if available on the message object.
+- **SQL injection via `path_nodes` in `mesh_connections` query**: The `IN (?,?,?)` parameterised form is safe — node prefixes are already extracted and normalised by `parse_path_nodes`. Never interpolate them directly into SQL.
+- **`MethodType` for `process_message` patch**: Must use `MethodType` — `MessageHandler` calls `await self.process_message(message)` via the descriptor protocol. Plain assignment would pass `message_handler` as first arg to the wrapper.
+- **`math` import in `message_interceptor.py`**: Add `import math` for `math.exp(...)` in `_get_path_metrics`.
 
 ---
 
-## Implementation Notes for Fresh Session
+## Implementation Notes
 
-These are the concrete gotchas discovered during design review that the implementer needs to know before writing a single line of code.
+### Files that already exist and must be read before editing
 
-### Read before writing
+- `community/config.py` — `ScoringConfig` already exists with `hop_weight`/`path_sig_weight`; update field names, do not recreate.
+- `community/coordinator_client.py` — `compute_sender_proximity_score` and `parse_path_nodes` already exist; rename/expand, do not recreate. Lazy `_ensure_client` already implemented.
+- `community/coverage_fallback.py` — `wait_before_responding_with_signal` already exists; update its parameter list.
+- `community/message_interceptor.py` — `_get_path_metrics` already exists returning 2-tuple; expand to 4-tuple. `_observing_handle_rf_log_data` and `_observing_process_message` already exist; remove the former, keep the latter.
 
-Always read the current file before editing. The files to modify already exist; do not recreate them:
+### `network_observer.py` and the `handle_rf_log_data` patch
 
-- `community/config.py` — ends after `CoordinatorConfig`; append `ScoringConfig` after it.
-- `community/coordinator_client.py` — current `__init__` eagerly creates `self._client = httpx.AsyncClient(...)` at line ~35; this is the line to replace with `self._client = None` + `_ensure_client()`.
-- `community/coverage_fallback.py` — currently uses module-level constants (`BASE_DELAY_MS` etc.) not a config object; `__init__` takes no args.
-- `community/message_interceptor.py` — currently patches only `send_response`, using a plain function assignment (not `MethodType`). The `restore()` method only restores `send_response`.
-- `community/community_core.py` — currently has no `ScoringConfig`, no `NetworkObserver`, no metrics counters.
-
-### Import additions required (not in current files)
-
-| File                     | New imports needed                                                                                                            |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `coordinator_client.py`  | `import re` (for `parse_path_nodes`)                                                                                          |
-| `message_interceptor.py` | `from types import MethodType`, `from .network_observer import NetworkObserver`                                               |
-| `community_core.py`      | `from .config import CoordinatorConfig, ScoringConfig` (add `ScoringConfig`), `from .network_observer import NetworkObserver` |
-
-### Two separate config-reading paths for scoring values
-
-`ScoringConfig.from_env_and_config(config)` reads from the **bot's `config.ini`** `[Scoring]` section (which typically won't exist, so defaults + `SCORING_*` env vars apply). `NetworkObserver._load_observer_config()` reads from **`community/scoring_observer_config.ini`** directly (path relative to `network_observer.py`'s `__file__`). Both also honour `OBSERVER_*` / `SCORING_*` env vars. The `.ini` file is primarily for `NetworkObserver`; `ScoringConfig` is wired through the normal bot config object.
-
-### Metrics counters placement
-
-`messages_processed_count` and `messages_responded_count` must be initialised in `CommunityBot.__init__` **before** `MessageInterceptor(...)` is constructed, because the interceptor holds a reference to `self.bot` and increments these on first message. Put them right after `super().__init__()`.
-
-### `MethodType` vs plain function assignment
-
-The current `message_interceptor.py` uses `bot.command_manager.send_response = self._coordinated_send_response` (plain assignment — works because `CommandManager` calls it as `await self.send_response(message, content)` passing `self` explicitly in the original code). The new `process_message` patch **must** use `MethodType` because `MessageHandler` calls `await self.process_message(message)` where Python's descriptor protocol would normally pass `self` — without `MethodType` the wrapper receives `message_handler` as its first positional arg instead of `message`. Use `MethodType` for both patches for consistency.
-
-### `repeater_node_stats` is legacy
-
-The branch creates this table in `_init_tables()` with the comment "Legacy table kept for backward compatibility (not used anymore)". It is safe to omit it entirely — no code reads from it. Only `repeater_daily_stats` and `network_observer_meta` are actively used.
-
-### DB table creation — use `execute_query` not `create_table`
-
-As documented in Risk Notes: all three `db_manager.create_table(...)` calls in `NetworkObserver._init_tables()` must be replaced with `db_manager.execute_query("CREATE TABLE IF NOT EXISTS ...")`. The whitelist blocks `create_table` for any table not in `ALLOWED_TABLES`.
-
-### Reference source
-
-The full content of all changed files from `best-path-score` was fetched during design review from:
-`https://raw.githubusercontent.com/jemcmullin/meshcore-community-bot/best-path-score/community/<filename>`
+Both are deleted. The `handle_rf_log_data` patch in the current branch fed `NetworkObserver` — without it there is nothing to feed, so the patch is unnecessary. The `process_message` patch (counter only) is retained.
 
 ---
 
 ## Files Summary
 
-| File                                    | Action                                                                                                                                                          | Lines changed (approx) |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| `community/scoring_observer_config.ini` | **Create**                                                                                                                                                      | ~60                    |
-| `community/network_observer.py`         | **Create**                                                                                                                                                      | ~250                   |
-| `community/config.py`                   | **Modify** — add `ScoringConfig`                                                                                                                                | +60                    |
-| `community/coordinator_client.py`       | **Modify** — lazy client, 2 static methods, extend `should_respond`                                                                                             | +120                   |
-| `community/coverage_fallback.py`        | **Modify** — `scoring_config` param, 2 new methods                                                                                                              | +60                    |
-| `community/message_interceptor.py`      | **Modify** — `network_observer` param, `handle_rf_log_data` patch (primary), `process_message` patch (counter only), `_get_path_metrics`, signal-aware fallback | +110                   |
-| `community/community_core.py`           | **Modify** — wire `ScoringConfig`, `NetworkObserver`, metrics                                                                                                   | +15                    |
-| `meshcore-bot/`                         | **No changes**                                                                                                                                                  | 0                      |
+| File                                    | Action                                                          | Net change        |
+| --------------------------------------- | --------------------------------------------------------------- | ----------------- |
+| `community/scoring_observer_config.ini` | Simplify — remove `[NetworkObserver]` section                   | −20 lines         |
+| `community/network_observer.py`         | **Delete**                                                      | −~300 lines       |
+| `community/config.py`                   | Update `ScoringConfig` fields                                   | ~5 lines changed  |
+| `community/coordinator_client.py`       | Rename/expand `compute_delivery_score`; update `should_respond` | ~20 lines changed |
+| `community/coverage_fallback.py`        | Update `wait_before_responding_with_signal` params              | ~10 lines changed |
+| `community/message_interceptor.py`      | New `_get_path_metrics` (3 queries); remove observer wiring     | ~40 lines changed |
+| `community/community_core.py`           | Remove `NetworkObserver`; wire `ScoringConfig`                  | ~10 lines changed |
+| `meshcore-bot/`                         | **No changes**                                                  | 0                 |
