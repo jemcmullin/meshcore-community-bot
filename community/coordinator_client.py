@@ -173,6 +173,13 @@ class CoordinatorClient:
             self.heartbeat_interval = data.get("next_heartbeat_seconds", 30)
             self._last_score_update = time.time()
 
+            logger.info(
+                "Heartbeat update: score=%.3f active_bots=%d next=%ss",
+                self.current_score,
+                self.active_bots,
+                self.heartbeat_interval,
+            )
+
             return True
         except Exception as e:
             logger.debug(f"Heartbeat failed: {e}")
@@ -229,6 +236,17 @@ class CoordinatorClient:
             w_reliability=w_reliability,
             w_freshness=w_freshness,
         )
+        logger.info(
+            "Submit bid hash=%s channel=%s score=%.3f in_hops=%s out_hops=%s infra=%s reliability=%s freshness=%s",
+            message_hash[:12],
+            channel or "",
+            payload["delivery_score"],
+            receiver_hops,
+            outbound_hops,
+            None if infrastructure is None else round(infrastructure, 3),
+            None if path_reliability is None else round(path_reliability, 3),
+            None if path_freshness is None else round(path_freshness, 3),
+        )
 
         try:
             client = await self._ensure_client()
@@ -240,7 +258,13 @@ class CoordinatorClient:
             )
             resp.raise_for_status()
             data = resp.json()
-            return data.get("should_respond", True)
+            decision = data.get("should_respond", True)
+            logger.info(
+                "Bid decision hash=%s should_respond=%s",
+                message_hash[:12],
+                decision,
+            )
+            return decision
         except Exception as e:
             logger.debug(f"Coordination check failed: {e}")
             return None  # Unreachable - caller should use fallback

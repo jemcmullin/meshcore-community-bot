@@ -103,7 +103,15 @@ class CoverageFallback:
         blended = proximity * 0.7 + self.effective_score * 0.3
         delay = self._cfg.base_delay_ms * (1.0 - blended) + self._cfg.min_delay_ms
         jitter = random.randint(0, self._cfg.max_jitter_ms)
-        return int(delay + jitter)
+        total_delay = int(delay + jitter)
+        logger.info(
+            "Fallback score blend: proximity=%.3f cached=%.3f blended=%.3f delay_ms=%d",
+            proximity,
+            self.effective_score,
+            blended,
+            total_delay,
+        )
+        return total_delay
 
     async def wait_before_responding(self) -> float:
         """Wait the computed delay before responding.

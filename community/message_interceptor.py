@@ -127,12 +127,40 @@ class MessageInterceptor:
             w_reliability=w_reliability,
             w_freshness=w_freshness,
         )
+        hops = [h for h in (message.hops, outbound_hops) if h is not None]
+        hop_score = max(0.0, 1.0 - min(hops) * 0.35) if hops else 0.5
+        infra_score = infrastructure if infrastructure is not None else 0.5
+        reliability_score = path_reliability if path_reliability is not None else 0.5
+        freshness_score = path_freshness if path_freshness is not None else 0.5
+
+        hop_component = hop_score * w_hops
+        infra_component = infra_score * w_infra
+        reliability_component = reliability_score * w_reliability
+        freshness_component = freshness_score * w_freshness
         logger.info(
             f"Coordinator bid [{content_prefix}] "
             f"in_hops={message.hops} out_hops={outbound_hops} "
             f"infra={infrastructure} reliability={path_reliability} "
             f"freshness={path_freshness} delivery={delivery_score:.3f} "
             f"path={message.path!r}"
+        )
+        logger.info(
+            "Score breakdown [%s] hop=%.3f*%.2f=%.3f infra=%.3f*%.2f=%.3f "
+            "reliability=%.3f*%.2f=%.3f freshness=%.3f*%.2f=%.3f total=%.3f",
+            content_prefix,
+            hop_score,
+            w_hops,
+            hop_component,
+            infra_score,
+            w_infra,
+            infra_component,
+            reliability_score,
+            w_reliability,
+            reliability_component,
+            freshness_score,
+            w_freshness,
+            freshness_component,
+            delivery_score,
         )
         logger.debug(
             f"Scoring detail sender={message.sender_pubkey or 'unknown'!r:.12} "
@@ -270,6 +298,17 @@ class MessageInterceptor:
                     path_freshness   = math.exp(-(age_hours or 999) / 6.0)
             except Exception as e:
                 logger.debug(f"Could not fetch path reliability/freshness: {e}")
+
+        logger.info(
+            "Path metrics sender=%s in_hops=%s out_hops=%s infra=%s reliability=%s freshness=%s path_nodes=%s",
+            sender_prefix2 or "??",
+            getattr(message, "hops", None),
+            outbound_hops,
+            None if infrastructure is None else round(infrastructure, 3),
+            None if path_reliability is None else round(path_reliability, 3),
+            None if path_freshness is None else round(path_freshness, 3),
+            path_nodes,
+        )
 
         return outbound_hops, infrastructure, path_reliability, path_freshness
 

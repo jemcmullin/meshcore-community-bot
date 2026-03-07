@@ -52,6 +52,13 @@ class CommunityBot(MeshCoreBot):
 
         # Load scoring config
         self.scoring_config = ScoringConfig.from_env_and_config(self.config)
+        self.logger.info(
+            "Scoring weights loaded: hops=%.2f infra=%.2f reliability=%.2f freshness=%.2f",
+            self.scoring_config.hop_weight,
+            self.scoring_config.infra_weight,
+            self.scoring_config.reliability_weight,
+            self.scoring_config.freshness_weight,
+        )
 
         # Initialize coordinator client
         self.coordinator = CoordinatorClient(
@@ -63,6 +70,12 @@ class CommunityBot(MeshCoreBot):
 
         # Initialize fallback with scoring config
         self.coverage_fallback = CoverageFallback(scoring_config=self.scoring_config)
+        self.logger.info(
+            "Fallback timing loaded: base_delay_ms=%s min_delay_ms=%s max_jitter_ms=%s",
+            self.scoring_config.base_delay_ms,
+            self.scoring_config.min_delay_ms,
+            self.scoring_config.max_jitter_ms,
+        )
 
         # Initialize packet reporter
         self.packet_reporter = PacketReporter(
