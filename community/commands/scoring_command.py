@@ -39,37 +39,26 @@ class ScoringCommand(BaseCommand):
             total_nodes = max(rows[0].get('total_nodes') or 1, 1)
             log_total = math.log1p(total_nodes)
 
-            lines = ["**Top Repeaters (Infrastructure Score)**", ""]
-            
-            # Summary header
-            lines.append(f"Network: {total_nodes} known nodes")
-            lines.append("")
+            lines = [f"Top 5 ({total_nodes}n):"]
 
-            # Detailed rankings
+            # Compact rankings
             for rank, row in enumerate(rows, start=1):
                 node_id = row['to_prefix']
                 fan_in = row['fan_in']
                 score = math.log1p(fan_in or 0) / log_total
-                percentage = (fan_in / total_nodes) * 100 if total_nodes > 0 else 0
-                
-                # Create visual bar (5 chars)
-                bar_length = int(score * 5)
-                bar = "█" * bar_length + "░" * (5 - bar_length)
+                pct = (fan_in / total_nodes) * 100 if total_nodes > 0 else 0
                 
                 # Quality rating
                 if score >= 0.85:
-                    rating = "⭐ Backbone"
+                    rating = "⭐"
                 elif score >= 0.65:
-                    rating = "● Good"
+                    rating = "●"
                 elif score >= 0.45:
-                    rating = "○ Fair"
+                    rating = "○"
                 else:
-                    rating = "◐ Local"
+                    rating = "◐"
                 
-                lines.append(
-                    f"{rank}. **{node_id.upper()}** {bar} {score:.2f} ({rating})\n"
-                    f"   └─ {fan_in} feeders ({percentage:.0f}% of network)"
-                )
+                lines.append(f"{node_id.upper()} {rating}{score:.2f} {fan_in}/{total_nodes} {pct:.0f}%")
 
             await self.send_response(message, "\n".join(lines))
             return True
