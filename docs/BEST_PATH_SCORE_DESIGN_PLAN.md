@@ -127,7 +127,7 @@ Two changes:
 Four additions (three patches + path metrics):
 
 1. **Accept `network_observer: Optional[NetworkObserver] = None`** in `__init__` and install **two additional** `MethodType` patches on `MessageHandler`:
-   - **`handle_rf_log_data` (primary observation source)** — fires on every raw RF frame. `routing_info['path_nodes']` is already decoded by the original handler before it appends to `recent_rf_data`. The wrapper snapshots `len(recent_rf_data)` before calling the original, then reads `[-1].routing_info.path_nodes` from the newly-appended entry. The length check guards against reading a stale entry when a packet with no `raw_hex` is skipped. No duplicate decode and no deep copy needed — asyncio is single-threaded so the list cannot be mutated between the awaited return and the read. This fires for **all** packet types including ADVERT and non-command TXT_MSG that never reach `process_message`.
+   - **`handle_rf_log_data` (primary observation source)** — fires on every raw RF frame. `routing_info['path_nodes']` is already decoded by the original handler before it appends to `recent_rf_data`. The wrapper records `t_before = time.time()` before calling the original, then checks `rf_list[-1].timestamp >= t_before` to identify the newly-appended entry. A length snapshot is not used because the internal cleanup inside `handle_rf_log_data` can shrink the list, so `len` can decrease even when a new entry was added. No duplicate decode and no deep copy needed — asyncio is single-threaded so the list cannot be mutated between the awaited return and the read. **DIRECT packets (overheard DMs) are skipped** — the bot is a bystander, and nearby DMs naturally route through the same local feeder, which would artificially inflate that feeder's significance score. Significance scoring is only meaningful for flood traffic. This fires for all other packet types including ADVERT and non-command TXT_MSG that never reach `process_message`.
 
    - **`process_message` (secondary — counter only)** — wraps the original solely to increment `self.bot.messages_processed_count`. Path observation is **not** performed here to avoid double-counting: `handle_rf_log_data` already observes the same path nodes for every packet that eventually reaches `process_message`.
 
@@ -198,6 +198,8 @@ Wire everything together:
 - **`db_manager` table whitelist** ⚠️: `meshcore-bot/modules/db_manager.py` enforces an `ALLOWED_TABLES` whitelist on `create_table()` and `drop_table()`. The three tables `NetworkObserver` needs (`repeater_node_stats`, `repeater_daily_stats`, `network_observer_meta`) are **not** in the whitelist, so calling `db_manager.create_table(...)` for them will raise `ValueError` and crash on startup.
 
   **Fix (preferred — no submodule touch):** Replace the three `db_manager.create_table(...)` calls in `NetworkObserver._init_tables()` with raw `db_manager.execute_query("CREATE TABLE IF NOT EXISTS ...")` calls. `execute_query()` is not whitelist-gated and is already used for `CREATE INDEX` in the same method.
+
+  Tables actually created by `NetworkObserver`: `repeater_daily_stats`, `network_observer_meta`. (`repeater_node_stats` is **not** used.)
 
   _Alternative:_ In `CommunityBot.__init__` (after `super().__init__()`), monkeypatch the class-level set:
 

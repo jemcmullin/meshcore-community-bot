@@ -134,8 +134,21 @@ class MessageInterceptor:
                 # The newly-appended entry (if any) will have timestamp >= t_before.
                 # Entries added before this call will all be < t_before.
                 if rf_list and rf_list[-1].get("timestamp", 0) >= t_before:
-                    path_nodes = (rf_list[-1].get("routing_info") or {}).get("path_nodes", [])
-                    if path_nodes:
+                    routing_info = rf_list[-1].get("routing_info") or {}
+                    route_type = routing_info.get("route_type", "")
+                    path_nodes = routing_info.get("path_nodes", [])
+                    if route_type == "DIRECT":
+                        # DIRECT packets are DMs overheard on RF — the bot is not
+                        # a participant. Nearby DMs naturally route through the same
+                        # local feeder as everything else, so observing their paths
+                        # would inflate that feeder's significance score without
+                        # reflecting its role in shared flood infrastructure.
+                        # Significance scoring is only meaningful for flood traffic.
+                        logger.debug(
+                            "NetworkObserver skipping DIRECT packet (overheard DM): %s",
+                            path_nodes,
+                        )
+                    elif path_nodes:
                         self.network_observer.observe_path(path_nodes)
                         logger.debug(
                             "NetworkObserver fed %d path nodes from RF log: %s",

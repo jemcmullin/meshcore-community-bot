@@ -27,8 +27,9 @@ MeshCore Community Bot - Extended MeshCore mesh radio bot with multi-bot coordin
 **`MessageHandler.handle_rf_log_data()`** (primary path-observation source):
 
 1. Fires on every raw RF frame, before `process_message` and for packet types that never reach it (ADVERT, non-command TXT_MSG, etc.)
-2. Snapshots `len(recent_rf_data)` before the original runs, then reads `[-1].routing_info.path_nodes` from the newly-appended entry
-3. Feeds those path nodes to `NetworkObserver` — this is the sole observation source
+2. Records `t_before = time.time()` before the original runs, then identifies the newly-appended entry by `timestamp >= t_before` (length snapshot not used — internal cleanup can shrink the list)
+3. **DIRECT packets (overheard DMs) are skipped** — the bot is a bystander; nearby DMs inflate the local feeder's score without reflecting flood infrastructure
+4. Feeds all other path nodes to `NetworkObserver` — this is the sole observation source
 
 **`MessageHandler.process_message()`** (counter only):
 
