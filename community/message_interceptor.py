@@ -13,6 +13,7 @@ Channel message flow through send_response:
 DMs bypass coordination entirely.
 """
 
+import asyncio
 import logging
 import math
 import time
@@ -162,6 +163,17 @@ class MessageInterceptor:
             freshness_component,
             delivery_score,
         )
+        await self._publish_web_viewer_coordination_event(
+            message=message,
+            message_hash=message_hash,
+            stage="bid",
+            delivery_score=delivery_score,
+            inbound_hops=message.hops,
+            outbound_hops=outbound_hops,
+            infrastructure=infrastructure,
+            path_reliability=path_reliability,
+            path_freshness=path_freshness,
+        )
         logger.debug(
             f"Scoring detail sender={message.sender_pubkey or 'unknown'!r:.12} "
             f"hash={message_hash[:12]} channel={message.channel}"
@@ -187,6 +199,17 @@ class MessageInterceptor:
 
         if should_respond is True:
             logger.info(f"Coordinator assigned response to us for: {content_prefix}")
+            await self._publish_web_viewer_coordination_event(
+                message=message,
+                message_hash=message_hash,
+                stage="assigned_us",
+                delivery_score=delivery_score,
+                inbound_hops=message.hops,
+                outbound_hops=outbound_hops,
+                infrastructure=infrastructure,
+                path_reliability=path_reliability,
+                path_freshness=path_freshness,
+            )
             result = await self._original_send_response(message, content, **kwargs)
             if hasattr(self.bot, "messages_responded_count"):
                 self.bot.messages_responded_count += 1
@@ -195,11 +218,33 @@ class MessageInterceptor:
 
         if should_respond is False:
             logger.info(f"Coordinator assigned response to another bot for: {content_prefix}")
+            await self._publish_web_viewer_coordination_event(
+                message=message,
+                message_hash=message_hash,
+                stage="assigned_other",
+                delivery_score=delivery_score,
+                inbound_hops=message.hops,
+                outbound_hops=outbound_hops,
+                infrastructure=infrastructure,
+                path_reliability=path_reliability,
+                path_freshness=path_freshness,
+            )
             await self._report_message(message, bot_responded=False, message_hash=message_hash)
             return True  # don't surface as failure to command
 
         # Coordinator unreachable — delivery-score-aware fallback delay
         logger.info("Coordinator unreachable, using delivery-score-aware fallback")
+        await self._publish_web_viewer_coordination_event(
+            message=message,
+            message_hash=message_hash,
+            stage="fallback",
+            delivery_score=delivery_score,
+            inbound_hops=message.hops,
+            outbound_hops=outbound_hops,
+            infrastructure=infrastructure,
+            path_reliability=path_reliability,
+            path_freshness=path_freshness,
+        )
         await self.fallback.wait_before_responding_with_signal(
             hops=message.hops,
             outbound_hops=outbound_hops,
@@ -351,6 +396,46 @@ class MessageInterceptor:
             )
         except Exception as e:
             logger.debug(f"Failed to report message: {e}")
+
+    async def _publish_web_viewer_coordination_event(
+        self,
+        message,
+        message_hash: str,
+        stage: str,
+        delivery_score: float,
+        inbound_hops: Optional[int],
+        outbound_hops: Optional[int],
+        infrastructure: Optional[float],
+        path_reliability: Optional[float],
+        path_freshness: Optional[float],
+    ) -> None:
+        """Publish coordination score snapshots to web viewer command stream.
+
+        Uses existing BotIntegration.capture_command() so no submodule changes are required.
+        """
+        wvi = getattr(self.bot, "web_viewer_integration", None)
+        if not wvi or not getattr(wvi, "bot_integration", None):
+            return
+
+        summary = (
+            f"stage={stage} score={delivery_score:.3f} in={inbound_hops} out={outbound_hops} "
+            f"infra={infrastructure if infrastructure is not None else 'n/a'} "
+            f"rel={path_reliability if path_reliability is not None else 'n/a'} "
+            f"fresh={path_freshness if path_freshness is not None else 'n/a'}"
+        )
+
+        command_id = f"coord:{message_hash[:12]}"
+        try:
+            await asyncio.to_thread(
+                wvi.bot_integration.capture_command,
+                message,
+                f"coord_{stage}",
+                summary,
+                True,
+                command_id,
+            )
+        except Exception as e:
+            logger.debug(f"Failed to publish coordination event to web viewer: {e}")
 
     # ------------------------------------------------------------------
     # Cleanup
