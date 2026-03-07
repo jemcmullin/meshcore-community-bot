@@ -6,7 +6,368 @@
 
 **Goal 2 — 0-1 delivery score.** Each bot computes a single `delivery_score ∈ [0, 1]` that represents the likelihood of a response from _this bot_ successfully reaching the sender, given known mesh topology and this bot's proximity to that sender. That score is sent to the coordinator as the primary bidding field. The bot with the highest score responds; others suppress.
 
+**Goal 3 — Prevent local feeder bias.** A bot sitting next to a busy private repeater should not outbid a more distant bot with better backbone connectivity. Infrastructure quality must balance raw hop count.
+
+**Goal 4 — Prevent score inflation over time.** As the network grows and data accumulates, scores should remain discriminating. A local feeder that serves 3 nodes should not eventually score as high as backbone infrastructure simply because observation counts increase.
+
 All changes are confined to `community/`. The `meshcore-bot/` submodule is **not touched**.
+
+---
+
+## Data Sources (meshcore-bot submodule only)
+
+All four scoring inputs read from tables created and populated by the submodule. No writes, no new tables.
+
+### `complete_contact_tracking`
+
+- **`out_path_len`** — stored outbound hop count to this sender (set when the bot last sent to them).
+- **`public_key`** — match by 8-char prefix of `message.sender_pubkey`.
+- Provides: `outbound_hops`.
+
+### `observed_paths`
+
+- **`observation_count`** — how many times a message path from this sender has been independently confirmed.
+- **`last_seen`** — timestamp of the most recent confirmed path, used to compute path age.
+- **`from_prefix`** — 2-char prefix of the sender node; matched against sender pubkey prefix.
+- **`packet_type`** — filter to `!= 'ADVERT'` (command/message paths only).
+- Provides: `path_reliability`, `path_freshness`.
+
+### `mesh_connections`
+
+- **`to_prefix`** — a repeater node in the inbound path.
+- **`from_prefix`** — an upstream node that routes through `to_prefix` (distinct count = fan-in).
+- Fan-in of each node in `message.path` reveals whether it is private infrastructure (few upstream sources) or shared backbone (many upstream sources).
+- Normalized against total distinct nodes in the network to prevent inflation.
+- Provides: `infrastructure_score`.
+
+### Live message fields (not DB)
+
+- **`message.hops`** — inbound hop count on the arriving packet. Used as a fallback when `out_path_len` is unknown and as a cross-check when both are available.
+- **`message.path`** — the literal path string (e.g. `"98,11,A4 (2 hops via Flood)"`). Parsed into node prefixes for the `mesh_connections` fan-in query.
+
+---
+
+## Scoring Formula
+
+```python
+# Component 1 — proximity (hop count)
+best_hops  = min(inbound_hops, outbound_hops)  # use whichever is available; min if both
+hop_score  = max(0.0, 1.0 - best_hops * 0.35)  # 0 hops=1.0, 3 hops=0.0, saturates at 0
+
+# Component 2 — infrastructure quality of inbound path
+# For each node X in message.path, count distinct upstream nodes in mesh_connections.
+# Normalize using log1p against total_nodes to prevent inflation as network grows.
+# Log scale compresses power-law distribution so "good" nodes score meaningfully.
+total_nodes      = COUNT(DISTINCT from_prefix) FROM mesh_connections
+fan_in           = COUNT(DISTINCT from_prefix) WHERE to_prefix = X
+infra_score_X    = log1p(fan_in) / log1p(total_nodes)
+infrastructure   = mean(infra_score_X for X in path nodes)
+
+# Component 3 — path reliability (confirmed observations to this sender)
+path_reliability = min(1.0, observation_count / 20.0)  # saturates at 20
+
+# Component 4 — path freshness (how recently was this path confirmed)
+path_freshness   = exp(-age_hours / 6.0)  # half-life ~4h; ~5% at 18h; ~0 at 36h+
+
+# Final score (unknown components default to 0.5 neutral)
+delivery_score = hop_score        * 0.35
+              + infrastructure    * 0.30
+              + path_reliability  * 0.20
+              + path_freshness    * 0.15
+```
+
+**Unknown inputs default to `0.5` (neutral) — missing data neither helps nor hurts.** Weights sum to 1.0. Path quality (infrastructure + reliability + freshness) collectively outweighs raw proximity (0.65 vs 0.35), ensuring that a close bot with poor infrastructure can be outbid by a more distant bot with confirmed backbone paths.
+
+---
+
+## Score Interpretation
+
+| Score range | Meaning                                                                                     |
+| ----------- | ------------------------------------------------------------------------------------------- |
+| 0.75 – 1.0  | Excellent: close proximity through well-connected backbone, confirmed and recently verified |
+| 0.50 – 0.75 | Good: moderate distance with decent infrastructure, or close but unconfirmed/stale          |
+| 0.25 – 0.50 | Poor: distant, stale, or through local/private feeders with low fan-in                      |
+| 0.0 – 0.25  | Very poor: many hops through weak infrastructure with no confirmed path data                |
+
+A score of exactly `0.5` means the bot has no data at all for this sender — pure neutral. Scores below 0.5 indicate known-bad paths (local feeder, stale, unreliable).
+
+---
+
+## Example Scenarios
+
+### Scenario A: Backbone bot, 2 hops, confirmed recent path
+
+- `best_hops = 2` → hop_score = `1 - 2×0.35` = **0.30**
+- Path via A2(15/20 nodes) + 7C(14/20 nodes):
+  - `log1p(15)/log1p(20) = 0.91`, `log1p(14)/log1p(20) = 0.89`
+  - infrastructure = **0.90**
+- `observation_count = 18` → reliability = `18/20` = **0.90**
+- `age = 0.5h` → freshness = `exp(-0.5/6)` = **0.92**
+- **Score: `0.30×0.35 + 0.90×0.30 + 0.90×0.20 + 0.92×0.15 = 0.71`**
+
+### Scenario B: Edge bot, 1 hop through local feeder
+
+- `best_hops = 1` → hop_score = `1 - 1×0.35` = **0.65**
+- Path via F4(3/20 nodes):
+  - `log1p(3)/log1p(20) = 0.46`
+  - infrastructure = **0.46**
+- `observation_count = 8` → reliability = `8/20` = **0.40**
+- `age = 4h` → freshness = `exp(-4/6)` = **0.51**
+- **Score: `0.65×0.35 + 0.46×0.30 + 0.40×0.20 + 0.51×0.15 = 0.49`**
+
+**Winner: Scenario A (0.71 vs 0.49)** — the backbone bot at 2 hops beats the edge bot at 1 hop due to superior infrastructure quality.
+
+### Scenario C: Unknown bot (new deployment, only hop count known)
+
+- `best_hops = 1` → hop_score = **0.65**
+- infrastructure = **0.5** (unknown)
+- reliability = **0.5** (unknown)
+- freshness = **0.5** (unknown)
+- **Score: `0.65×0.35 + 0.5×0.30 + 0.5×0.20 + 0.5×0.15 = 0.55`**
+
+**Result:** Unknown bot (0.55) scores higher than known-bad bot (0.49) but lower than known-good bot (0.71). Neutral defaults allow graceful degradation.
+
+---
+
+## What Changes (File by File)
+
+### Files Removed
+
+| File                            | Reason                                                                                            |
+| ------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `community/network_observer.py` | Replaced entirely by direct `mesh_connections` queries. No in-memory observation tracking needed. |
+
+### Modified Files
+
+#### `community/scoring_observer_config.ini`
+
+Remove the `[NetworkObserver]` section entirely. The `[Scoring]` section contains configurable weight knobs:
+
+```ini
+[Scoring]
+# Weight for hop-count component of delivery score
+hop_weight = 0.35
+
+# Weight for infrastructure quality of inbound path (mesh_connections fan-in)
+infra_weight = 0.30
+
+# Weight for path reliability (confirmed observations to this sender)
+reliability_weight = 0.20
+
+# Weight for path freshness (how recently the path was confirmed)
+freshness_weight = 0.15
+
+# Fallback parameters when coordinator is unreachable
+base_delay_ms = 2000   # max delay window (ms)
+min_delay_ms = 100     # floor delay even for best bot
+max_jitter_ms = 200    # random jitter to break ties
+```
+
+All values overridable by `SCORING_*` env vars.
+
+---
+
+#### `community/config.py`
+
+`ScoringConfig` updated with new weights:
+
+```python
+@dataclass
+class ScoringConfig:
+    """Configuration for delivery scoring and fallback timing."""
+    hop_weight: float = 0.35         # proximity signal
+    infra_weight: float = 0.30       # infrastructure quality of inbound path
+    reliability_weight: float = 0.20  # how many confirmed paths to this sender
+    freshness_weight: float = 0.15   # how recently the path was confirmed
+    base_delay_ms: int = 2000
+    min_delay_ms: int = 100
+    max_jitter_ms: int = 200
+    degrade_after_seconds: int = 3600
+    degrade_target: float = 0.5
+    degrade_window_seconds: int = 86400
+
+    @classmethod
+    def from_env_and_config(cls, config) -> "ScoringConfig":
+        # Reads [Scoring] section + SCORING_* env var overrides
+        ...
+```
+
+**Non-breaking:** `CoordinatorConfig` is unchanged.
+
+---
+
+#### `community/coordinator_client.py`
+
+Renamed and expanded `compute_sender_proximity_score` → `compute_delivery_score`:
+
+```python
+@staticmethod
+def compute_delivery_score(
+    inbound_hops: Optional[int],
+    outbound_hops: Optional[int],
+    infrastructure: Optional[float],
+    path_reliability: Optional[float],
+    path_freshness: Optional[float],
+    w_hops: float = 0.35,
+    w_infra: float = 0.30,
+    w_reliability: float = 0.20,
+    w_freshness: float = 0.15,
+) -> float:
+    """Compute a delivery score ∈ [0, 1] for coordinator bidding.
+
+    Unknown components default to 0.5 (neutral).
+    hop_score = max(0, 1 - best_hops * 0.35)  [0 hops=1.0, 3 hops=0.0]
+    """
+    hops = [h for h in (inbound_hops, outbound_hops) if h is not None]
+    hop_score = max(0.0, 1.0 - min(hops) * 0.35) if hops else 0.5
+
+    infra = infrastructure   if infrastructure   is not None else 0.5
+    rel   = path_reliability if path_reliability is not None else 0.5
+    fresh = path_freshness   if path_freshness   is not None else 0.5
+
+    return hop_score * w_hops + infra * w_infra + rel * w_reliability + fresh * w_freshness
+```
+
+`should_respond()` updated to accept 4 new params (`infrastructure`, `path_reliability`, `path_freshness`, weight params) and send `delivery_score` in the payload instead of `sender_proximity_score`. SNR and RSSI removed from payload — not used in scoring.
+
+**Non-breaking:** All new params default to `None`.
+
+---
+
+#### `community/coverage_fallback.py`
+
+Updated `compute_delay_ms_with_signal` and `wait_before_responding_with_signal` to accept `infrastructure`, `path_reliability`, `path_freshness` (replacing `path_significance`). Internally calls `compute_delivery_score` with the updated weights.
+
+---
+
+#### `community/message_interceptor.py`
+
+Major changes:
+
+1. **Removed `network_observer` parameter** and `handle_rf_log_data` patch. No in-memory path observation.
+
+2. **Replaced `_get_path_metrics`** with 4-output version querying submodule tables:
+
+```python
+async def _get_path_metrics(self, message) -> tuple[Optional[int], Optional[float], Optional[float], Optional[float]]:
+    """Returns (outbound_hops, infrastructure, path_reliability, path_freshness)."""
+
+    # Query 1: outbound_hops from complete_contact_tracking
+    rows = await self.bot.db_manager.aexecute_query(
+        """SELECT out_path_len FROM complete_contact_tracking
+           WHERE public_key LIKE ? AND out_path_len IS NOT NULL
+           ORDER BY last_heard DESC LIMIT 1""",
+        (sender_prefix8 + "%",), fetch=True,
+    )
+
+    # Query 2: infrastructure from mesh_connections (log1p / total_nodes)
+    rows = await self.bot.db_manager.aexecute_query(
+        f"""SELECT to_prefix,
+                   COUNT(DISTINCT from_prefix) AS fan_in,
+                   (SELECT COUNT(DISTINCT from_prefix) FROM mesh_connections) AS total_nodes
+            FROM mesh_connections
+            WHERE to_prefix IN ({placeholders})
+            GROUP BY to_prefix""",
+        tuple(node_lower), fetch=True,
+    )
+    if rows:
+        total_nodes = max(rows[0][2] or 1, 1)
+        log_total = math.log1p(total_nodes)
+        scores = [math.log1p(r[1] or 0) / log_total for r in rows]
+        infrastructure = sum(scores) / len(scores)
+
+    # Query 3: reliability + freshness from observed_paths
+    rows = await self.bot.db_manager.aexecute_query(
+        """SELECT observation_count,
+                  CAST((julianday('now') - julianday(last_seen)) * 24 AS REAL)
+           FROM observed_paths
+           WHERE from_prefix = ? AND packet_type != 'ADVERT'
+           ORDER BY observation_count DESC LIMIT 1""",
+        (sender_prefix2,), fetch=True,
+    )
+    if rows:
+        obs_count, age_hours = rows[0]
+        path_reliability = min(1.0, (obs_count or 1) / 20.0)
+        path_freshness = math.exp(-(age_hours or 999) / 6.0)
+
+    return outbound_hops, infrastructure, path_reliability, path_freshness
+```
+
+**Key:** Infrastructure uses `log1p(fan_in) / log1p(total_nodes)` normalization. This prevents inflation — a local feeder that serves 3 nodes scores ~0.36 in a 20-node network and ~0.24 in a 100-node network. It cannot inflate to 1.0 simply because observation counts increase.
+
+3. **Updated `_coordinated_send_response`** to unpack the 4-tuple and pass to `compute_delivery_score` and `should_respond`.
+
+**Non-breaking:** `_get_path_metrics` only called internally.
+
+---
+
+#### `community/community_core.py`
+
+- Removed `NetworkObserver` import and construction
+- Wire `ScoringConfig` to `CoverageFallback`
+- Do not pass `network_observer` to `MessageInterceptor`
+
+---
+
+#### `community/commands/scoring_command.py`
+
+Updated to query `mesh_connections` directly with log1p normalization:
+
+```python
+rows = await self.bot.db_manager.aexecute_query(
+    """SELECT to_prefix,
+              COUNT(DISTINCT from_prefix) AS fan_in,
+              (SELECT COUNT(DISTINCT from_prefix) FROM mesh_connections) AS total_nodes
+       FROM mesh_connections
+       GROUP BY to_prefix
+       ORDER BY fan_in DESC LIMIT 5""",
+    fetch=True,
+)
+total_nodes = max(rows[0][2] or 1, 1)
+log_total = math.log1p(total_nodes)
+
+for rank, (node_id, fan_in, _) in enumerate(rows, start=1):
+    score = math.log1p(fan_in or 0) / log_total
+    print(f"{rank}. {node_id.upper()} {score:.2f} (feeders={fan_in}/{total_nodes})")
+```
+
+Displays `feeders=15/20` style output so operators can see the raw fraction.
+
+---
+
+## Implementation Summary
+
+| File                                    | Change                                                               |
+| --------------------------------------- | -------------------------------------------------------------------- |
+| `community/scoring_observer_config.ini` | Updated weights; removed `[NetworkObserver]` section                 |
+| `community/config.py`                   | Updated `ScoringConfig` fields and defaults                          |
+| `community/coordinator_client.py`       | Renamed/expanded scoring function; updated payload                   |
+| `community/coverage_fallback.py`        | Updated function signatures for 4-component scoring                  |
+| `community/message_interceptor.py`      | New 4-output `_get_path_metrics` with 3 DB queries; removed observer |
+| `community/community_core.py`           | Removed `NetworkObserver` wiring                                     |
+| `community/commands/scoring_command.py` | Query `mesh_connections` directly with log1p normalization           |
+| `community/network_observer.py`         | **Deleted**                                                          |
+| `meshcore-bot/`                         | **No changes**                                                       |
+
+---
+
+## Non-Breaking Guarantees
+
+- All existing commands unchanged
+- `should_respond()` new params default to `None`
+- DB queries gracefully handle missing tables/data (return `None` → neutral 0.5 scoring)
+- Coordinator protocol compatible (new `delivery_score` field; old field ignored)
+- Submodule untouched
+
+---
+
+## Key Benefits
+
+1. **No local feeder bias** — fan-in naturally low for private repeaters
+2. **Anti-inflation** — normalization to `total_nodes` prevents saturation over time
+3. **Freshness tracking** — stale paths explicitly penalized (exponential decay)
+4. **Per-message accuracy** — infrastructure scored from actual inbound path, not bot-level cache
+5. **Simpler** — no in-memory observers, no background threads, just 3 SQL queries per command message
 
 ---
 

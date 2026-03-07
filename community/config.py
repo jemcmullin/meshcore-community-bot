@@ -63,10 +63,12 @@ class CoordinatorConfig:
 
 @dataclass
 class ScoringConfig:
-    """Configuration for proximity scoring and fallback timing."""
+    """Configuration for delivery scoring and fallback timing."""
 
-    hop_weight: float = 0.6
-    path_sig_weight: float = 0.4
+    hop_weight: float = 0.35         # proximity signal
+    infra_weight: float = 0.30       # infrastructure quality of inbound path
+    reliability_weight: float = 0.20  # how many confirmed paths to this sender
+    freshness_weight: float = 0.15   # how recently the path was confirmed
     base_delay_ms: int = 2000
     min_delay_ms: int = 100
     max_jitter_ms: int = 200
@@ -85,8 +87,10 @@ class ScoringConfig:
             return config.get("Scoring", key, fallback=str(default))
 
         return cls(
-            hop_weight=float(_get("hop_weight", 0.6)),
-            path_sig_weight=float(_get("path_sig_weight", 0.4)),
+            hop_weight=float(_get("hop_weight", 0.35)),
+            infra_weight=float(_get("infra_weight", 0.30)),
+            reliability_weight=float(_get("reliability_weight", 0.20)),
+            freshness_weight=float(_get("freshness_weight", 0.15)),
             base_delay_ms=int(_get("base_delay_ms", 2000)),
             min_delay_ms=int(_get("min_delay_ms", 100)),
             max_jitter_ms=int(_get("max_jitter_ms", 200)),

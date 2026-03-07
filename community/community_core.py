@@ -28,7 +28,6 @@ from .config import CoordinatorConfig, ScoringConfig
 from .coordinator_client import CoordinatorClient
 from .coverage_fallback import CoverageFallback
 from .message_interceptor import MessageInterceptor
-from .network_observer import NetworkObserver
 from .packet_reporter import PacketReporter
 
 logger = logging.getLogger("CommunityBot")
@@ -65,9 +64,6 @@ class CommunityBot(MeshCoreBot):
         # Initialize fallback with scoring config
         self.coverage_fallback = CoverageFallback(scoring_config=self.scoring_config)
 
-        # Initialize network observer
-        self.network_observer = NetworkObserver(self.db_manager)
-
         # Initialize packet reporter
         self.packet_reporter = PacketReporter(
             coordinator=self.coordinator,
@@ -81,7 +77,6 @@ class CommunityBot(MeshCoreBot):
             coordinator=self.coordinator,
             fallback=self.coverage_fallback,
             reporter=self.packet_reporter,
-            network_observer=self.network_observer,
         )
 
         # Load community-specific commands

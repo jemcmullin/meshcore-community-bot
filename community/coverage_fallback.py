@@ -28,8 +28,10 @@ class _DefaultConfig:
     degrade_after_seconds: int = DEGRADE_AFTER_SECONDS
     degrade_target: float = DEGRADE_TARGET
     degrade_window_seconds: int = 86400
-    hop_weight: float = 0.6
-    path_sig_weight: float = 0.4
+    hop_weight: float = 0.35
+    infra_weight: float = 0.30
+    reliability_weight: float = 0.20
+    freshness_weight: float = 0.15
 
 
 class CoverageFallback:
@@ -75,21 +77,27 @@ class CoverageFallback:
         self,
         hops: Optional[int],
         outbound_hops: Optional[int],
-        path_significance: Optional[float],
+        infrastructure: Optional[float] = None,
+        path_reliability: Optional[float] = None,
+        path_freshness: Optional[float] = None,
     ) -> int:
-        """Compute delay blending per-message proximity with cached coverage score.
+        """Compute delay blending per-message delivery score with cached coverage score.
 
-        Uses the same proximity formula as the coordinator bid so the nearest
-        bot wins the race when coordinator is unreachable.
+        Uses the same delivery score formula as the coordinator bid so the
+        nearest / best-path bot wins the race when coordinator is unreachable.
         """
         from .coordinator_client import CoordinatorClient
 
-        proximity = CoordinatorClient.compute_sender_proximity_score(
+        proximity = CoordinatorClient.compute_delivery_score(
             inbound_hops=hops,
             outbound_hops=outbound_hops,
-            path_significance=path_significance,
-            hop_weight=self._cfg.hop_weight,
-            path_sig_weight=self._cfg.path_sig_weight,
+            infrastructure=infrastructure,
+            path_reliability=path_reliability,
+            path_freshness=path_freshness,
+            w_hops=self._cfg.hop_weight,
+            w_infra=self._cfg.infra_weight,
+            w_reliability=self._cfg.reliability_weight,
+            w_freshness=self._cfg.freshness_weight,
         )
         # Blend per-message proximity (70%) with cached coverage (30%)
         blended = proximity * 0.7 + self.effective_score * 0.3
@@ -115,14 +123,19 @@ class CoverageFallback:
         self,
         hops: Optional[int],
         outbound_hops: Optional[int],
-        path_significance: Optional[float],
+        infrastructure: Optional[float] = None,
+        path_reliability: Optional[float] = None,
+        path_freshness: Optional[float] = None,
     ) -> float:
-        """Signal-aware fallback delay. Returns seconds waited."""
-        delay_ms = self.compute_delay_ms_with_signal(hops, outbound_hops, path_significance)
+        """Delivery-score-aware fallback delay. Returns seconds waited."""
+        delay_ms = self.compute_delay_ms_with_signal(
+            hops, outbound_hops, infrastructure, path_reliability, path_freshness
+        )
         delay_s = delay_ms / 1000.0
         logger.info(
             f"Fallback mode (signal-aware): waiting {delay_ms}ms "
-            f"(hops={hops}, out_hops={outbound_hops}, path_sig={path_significance})"
+            f"(hops={hops}, out_hops={outbound_hops}, "
+            f"infra={infrastructure}, reliability={path_reliability}, fresh={path_freshness})"
         )
         await asyncio.sleep(delay_s)
         return delay_s

@@ -7,7 +7,7 @@ MeshCore Community Bot - Extended MeshCore mesh radio bot with multi-bot coordin
 ## Architecture
 
 - **Base bot:** meshcore-bot at `meshcore-bot/` — **git submodule, do not modify directly**. All behaviour changes go in `community/` or as tracked patches in `MESHCORE-BOT-PATCHES/`.
-- **Extension:** `community/` package adds coordinator client, message interceptor, packet reporter, network observer
+- **Extension:** `community/` package adds coordinator client, message interceptor, packet reporter, and delivery scoring
 - **Entry point:** `community_bot.py` → `community/community_core.py:CommunityBot` (extends `MeshCoreBot`)
 - **Scheduler:** Runs as an asyncio task in the main event loop (not a separate thread)
 - **DB access:** Sync sqlite3 calls wrapped with `asyncio.to_thread()` to avoid blocking the event loop. Web viewer runs in its own Flask thread and uses sync sqlite3 directly.
@@ -16,32 +16,30 @@ MeshCore Community Bot - Extended MeshCore mesh radio bot with multi-bot coordin
 
 `meshcore-bot/` is a git submodule tracking upstream. The strong preference is **never modify files inside `meshcore-bot/`**. Instead:
 
-1. **Patch via community layer** — monkey-patch methods at runtime from `community/` code (e.g. `MessageInterceptor` patches `handle_rf_log_data`, `process_message`, and `send_response` using `types.MethodType`).
+1. **Patch via community layer** — monkey-patch methods at runtime from `community/` code (e.g. `MessageInterceptor` patches `process_message` and `send_response` using `types.MethodType`).
 2. **If a submodule change is unavoidable**, record it in `MESHCORE-BOT-PATCHES/` as a numbered `.patch` file (format: `NNN-short-description.patch`) so it can be re-applied after submodule updates.
-3. **DB table whitelist** — `db_manager.py` enforces `ALLOWED_TABLES` on `create_table()`/`drop_table()`. Community tables are **not** in that whitelist. Use `db_manager.execute_query("CREATE TABLE IF NOT EXISTS ...")` for DDL in community code — `execute_query()` is not whitelist-gated.
+3. **DB tables** — Community code uses **only existing submodule tables** (`complete_contact_tracking`, `observed_paths`, `mesh_connections`). No community tables are created.
 
 ## Key Integration Point
 
-`MessageInterceptor` patches three methods on the bot via `types.MethodType`:
+`MessageInterceptor` patches two methods on the bot via `types.MethodType`:
 
-**`MessageHandler.handle_rf_log_data()`** (primary path-observation source):
-
-1. Fires on every raw RF frame, before `process_message` and for packet types that never reach it (ADVERT, non-command TXT_MSG, etc.)
-2. Records `t_before = time.time()` before the original runs, then identifies the newly-appended entry by `timestamp >= t_before` (length snapshot not used — internal cleanup can shrink the list)
-3. **DIRECT packets (overheard DMs) are skipped** — the bot is a bystander; nearby DMs inflate the local feeder's score without reflecting flood infrastructure
-4. Feeds all other path nodes to `NetworkObserver` — this is the sole observation source
-
-**`MessageHandler.process_message()`** (counter only):
+**`MessageHandler.process_message()`** (messages_processed counter):
 
 1. Increments `messages_processed_count` on the bot
-2. Does **not** feed the observer — `handle_rf_log_data` already covered the same path, avoiding double-counting
+2. Runs original handler unchanged
 
-**`CommandManager.send_response()`** (coordination gate):
+**`CommandManager.send_response()`** (coordination gate + delivery scoring):
 
 1. Lets DMs through immediately (no coordination needed)
-2. Queries local DB for outbound hop count + path significance (see Coordination Flow)
-3. Checks with coordinator — 300ms bidding window, proximity-scored, best bot responds
-4. Falls back to proximity-weighted delay if coordinator unreachable (500ms timeout)
+2. For channel messages, queries local DB for:
+   - `outbound_hops` from `complete_contact_tracking`
+   - `infrastructure` (log-scaled fan-in) from `mesh_connections`
+   - `path_reliability` from `observed_paths` (observation count)
+   - `path_freshness` from `observed_paths` (how recent)
+3. Computes `delivery_score` = weighted blend of 4 components (see Coordination Flow)
+4. Checks with coordinator — 300ms bidding window, delivery-scored, best bot responds
+5. Falls back to delivery-score-aware delay if coordinator unreachable (500ms timeout)
 
 All 20+ existing commands work unchanged — they call `BaseCommand.send_response()` which delegates to `CommandManager.send_response()`.
 
@@ -52,15 +50,15 @@ community_bot.py                    # Entry point
 community/
 ├── community_core.py              # CommunityBot extends MeshCoreBot
 ├── coordinator_client.py          # httpx client for coordinator API (lazy AsyncClient init)
-├── message_interceptor.py         # Patches handle_rf_log_data + process_message + send_response via MethodType
-├── network_observer.py            # Learns repeater significance from observed traffic
+├── message_interceptor.py         # Patches process_message + send_response via MethodType; queries DB for delivery scoring
 ├── packet_reporter.py             # Background batch reporter
-├── coverage_fallback.py           # Proximity-weighted delay when coordinator down
+├── coverage_fallback.py           # Delivery-score-aware delay when coordinator down
 ├── config.py                      # CoordinatorConfig + ScoringConfig from env/ini
-├── scoring_observer_config.ini    # [Scoring] weights + [NetworkObserver] tuning params
+├── scoring_observer_config.ini    # [Scoring] weights (hop, infra, reliability, freshness)
 └── commands/
     ├── coverage_command.py        # "coverage" - show bot's score
-    └── botstatus_command.py       # "botstatus" - coordinator status
+    ├── botstatus_command.py       # "botstatus" - coordinator status
+    └── scoring_command.py         # "scoring" - top repeaters by infrastructure score
 MESHCORE-BOT-PATCHES/              # Tracked patches for submodule (apply after updates)
 └── README.md                      # Patch naming convention: NNN-short-description.patch
 meshcore-bot/                      # Git submodule — DO NOT MODIFY DIRECTLY
@@ -138,16 +136,26 @@ docker compose logs -f
 
 ## Coordination Flow
 
-1. **Every raw RF frame** → `MessageInterceptor._observing_handle_rf_log_data()` reads the newly-decoded `routing_info['path_nodes']` from `recent_rf_data` and feeds them to `NetworkObserver` (learns repeater roles over time). Covers ADVERT, non-command TXT_MSG, and all other packet types.
-2. If message matches a command → `_coordinated_send_response()` runs:
-   a. Query DB: `outbound_hops` (from `complete_contact_tracking.out_path_len`) + `path_significance` (from `NetworkObserver`)
-   b. Compute `sender_proximity_score = hop_score × hop_weight + path_sig × path_sig_weight`
-   c. Send hash + proximity score to coordinator `POST /should-respond` (300ms bidding window)
-3. If coordinator says yes → respond normally
-4. If coordinator says no → suppress (another bot handles it)
-5. If coordinator unreachable (>500ms) → `wait_before_responding_with_signal()` — proximity-weighted delay so nearest bot wins the race
+1. If message matches a command → `_coordinated_send_response()` runs:
+   a. Query DB for delivery metrics:
+   - `outbound_hops` from `complete_contact_tracking.out_path_len`
+   - `infrastructure` = log1p(fan_in) / log1p(total_nodes) from `mesh_connections` (normalized so most-connected node = 1.0)
+   - `path_reliability` = obs_count / 20 from `observed_paths`
+   - `path_freshness` = exp(-age_hours / 6) from `observed_paths`
+     b. Compute `delivery_score = hop_score × 0.35 + infrastructure × 0.30 + reliability × 0.20 + freshness × 0.15`
+   - `hop_score = max(0, 1 - best_hops × 0.35)` where `best_hops = min(inbound_hops, outbound_hops)`
+   - Unknown components default to 0.5 (neutral)
+     c. Send hash + delivery_score to coordinator `POST /should-respond` (300ms bidding window)
+2. If coordinator says yes → respond normally
+3. If coordinator says no → suppress (another bot handles it)
+4. If coordinator unreachable (>500ms) → `wait_before_responding_with_signal()` — delivery-score-aware delay so best-path bot wins the race
 
-**Proximity score formula:** `hop_score = max(0, 1 - best_hops × 0.25)` where `best_hops = min(inbound_hops, outbound_hops)`. Blended with `path_significance` using configurable weights (`scoring_observer_config.ini` or `SCORING_*` env vars). SNR/RSSI kept in payload for analytics only — not used in scoring.
+**Key properties:**
+
+- **No local feeder bias:** Fan-in naturally low for private repeaters; backbone nodes high
+- **Anti-inflation:** Normalized to `total_nodes` so scores don't creep up as network grows
+- **Per-message freshness:** Path analyzed fresh on every message, not cached
+- Weights configurable via `scoring_observer_config.ini` or `SCORING_*` env vars
 
 ## Deployment
 

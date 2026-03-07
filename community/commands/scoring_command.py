@@ -1,44 +1,44 @@
-"""Scoring command - shows top repeaters by significance score."""
+"""Scoring command - shows top repeaters by infrastructure score (mesh_connections fan-in)."""
+
+import math
 
 from modules.commands.base_command import BaseCommand
 from modules.models import MeshMessage
 
 
 class ScoringCommand(BaseCommand):
-    """Shows the top 5 repeaters by significance score from the network observer."""
+    """Shows the top 5 repeaters by infrastructure score from mesh_connections fan-in."""
 
     name = "scoring"
     keywords = ["scoring"]
-    description = "Shows top 5 repeaters by significance score"
+    description = "Shows top 5 repeaters by infrastructure score"
     requires_dm = True
     category = "community"
 
     async def execute(self, message: MeshMessage) -> bool:
         try:
-            observer = getattr(self.bot, "network_observer", None)
-            if not observer:
-                await self.send_response(message, "Network observer not available")
+            rows = await self.bot.db_manager.aexecute_query(
+                """SELECT to_prefix,
+                          COUNT(DISTINCT from_prefix) AS fan_in,
+                          (SELECT COUNT(DISTINCT from_prefix)
+                           FROM mesh_connections) AS total_nodes
+                   FROM mesh_connections
+                   GROUP BY to_prefix
+                   ORDER BY fan_in DESC
+                   LIMIT 5""",
+                fetch=True,
+            )
+            if not rows:
+                await self.send_response(message, "No repeater data available yet")
                 return True
 
-            node_counts = observer._node_counts
-            if not node_counts:
-                await self.send_response(message, "No repeater data observed yet")
-                return True
+            total_nodes = max(rows[0][2] or 1, 1)
+            log_total = math.log1p(total_nodes)
 
-            scored = [
-                (node_id, observer.get_node_significance(node_id))
-                for node_id in node_counts
-            ]
-            scored.sort(key=lambda x: x[1], reverse=True)
-            top5 = scored[:5]
-
-            lines = ["Top Repeaters:"]
-            for rank, (node_id, sig) in enumerate(top5, start=1):
-                counts = node_counts[node_id]
-                lines.append(
-                    f"{rank}. {node_id} {sig:.2f} "
-                    f"(seen={counts['total']} last={counts['last_hop']})"
-                )
+            lines = ["Top Repeaters (infrastructure score):"]
+            for rank, (node_id, fan_in, _) in enumerate(rows, start=1):
+                score = math.log1p(fan_in or 0) / log_total
+                lines.append(f"{rank}. {node_id.upper()} {score:.2f} (feeders={fan_in}/{total_nodes})")
 
             await self.send_response(message, "\n".join(lines))
             return True

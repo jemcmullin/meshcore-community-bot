@@ -1,23 +1,20 @@
-"""Patches three MessageHandler/CommandManager methods via MethodType so
-coordination, path observation, and reporting all work without touching the
-submodule.
+"""Patches two MessageHandler/CommandManager methods via MethodType so
+coordination and reporting work without touching the submodule.
 
 Patches installed:
-  handle_rf_log_data  — primary path-observation source; fires on every raw RF
-                        frame and has routing_info (path_nodes) already decoded.
-  process_message     — secondary source for the high-level MeshMessage path
-                        field on channel messages that happen to be commands.
-  send_response       — coordinator bidding gate; also drives PacketReporter.
+  process_message  — increments messages_processed_count counter.
+  send_response    — coordinator bidding gate; also drives PacketReporter.
 
 Channel message flow through send_response:
-  1. DB queried for outbound hops + path significance.
-  2. Proximity score sent to coordinator (300 ms bidding window).
+  1. DB queried for outbound hops, infrastructure, reliability, freshness.
+  2. Delivery score sent to coordinator (300 ms bidding window).
   3. Coordinator assigns response to one bot; others suppress.
-  4. Falls back to signal-aware delay if coordinator unreachable.
+  4. Falls back to delivery-score-aware delay if coordinator unreachable.
 DMs bypass coordination entirely.
 """
 
 import logging
+import math
 import time
 from types import MethodType
 from typing import Optional
@@ -37,13 +34,11 @@ class MessageInterceptor:
         coordinator: CoordinatorClient,
         fallback: CoverageFallback,
         reporter=None,
-        network_observer=None,
     ):
         self.bot = bot
         self.coordinator = coordinator
         self.fallback = fallback
         self.reporter = reporter
-        self.network_observer = network_observer
 
         # --- Patch send_response ---
         self._original_send_response = bot.command_manager.send_response
@@ -55,7 +50,7 @@ class MessageInterceptor:
             _bound_send_response, bot.command_manager
         )
 
-        # --- Patch process_message (secondary path-observation source) ---
+        # --- Patch process_message (messages_processed_count counter) ---
         self._original_process_message = None
         if hasattr(bot, "message_handler"):
             self._original_process_message = bot.message_handler.process_message
@@ -68,97 +63,19 @@ class MessageInterceptor:
             )
             logger.info("Message interceptor installed on MessageHandler.process_message")
 
-        # --- Patch handle_rf_log_data (primary path-observation source) ---
-        # Fires on every raw RF frame; routing_info is decoded here before
-        # process_message and for packet types that never reach process_message
-        # (ADVERT, non-command TXT_MSG, etc.).
-        self._original_handle_rf_log_data = None
-        if hasattr(bot, "message_handler") and self.network_observer is not None:
-            self._original_handle_rf_log_data = bot.message_handler.handle_rf_log_data
-
-            async def _bound_handle_rf_log_data(mh_self, event, metadata=None):
-                return await self._observing_handle_rf_log_data(event, metadata)
-
-            bot.message_handler.handle_rf_log_data = MethodType(
-                _bound_handle_rf_log_data, bot.message_handler
-            )
-            logger.info("Message interceptor installed on MessageHandler.handle_rf_log_data")
-
         logger.info("Message interceptor installed on CommandManager.send_response")
 
     # ------------------------------------------------------------------
-    # process_message patch — secondary path-observation source
+    # process_message patch — messages_processed_count counter
     # ------------------------------------------------------------------
 
     async def _observing_process_message(self, message):
-        """Increment messages_processed_count, then run the original.
-
-        Path observation is intentionally omitted here — handle_rf_log_data
-        already feeds every decoded path to NetworkObserver (including packet
-        types that never reach process_message).  Observing again here would
-        double-count the same path nodes for command messages.
-        """
+        """Increment messages_processed_count, then run the original."""
         assert self._original_process_message is not None
         if hasattr(self.bot, "messages_processed_count"):
             self.bot.messages_processed_count += 1
 
         return await self._original_process_message(message)
-
-    # ------------------------------------------------------------------
-    # handle_rf_log_data patch — primary path-observation source
-    # ------------------------------------------------------------------
-
-    async def _observing_handle_rf_log_data(self, event, metadata=None):
-        """Run the original handler, then feed its decoded path to NetworkObserver.
-
-        The original appends to recent_rf_data with routing_info already
-        populated.  Snapshot the list length first so we can detect whether a
-        new entry was added — guarding against reading a stale [-1] entry when a
-        packet had no raw_hex and was never appended.  No duplicate decode and no
-        deep copy needed: asyncio is single-threaded so nothing mutates the list
-        between the awaited return and our read.
-        """
-        mh = self.bot.message_handler
-        # Snapshot time before the call so we can identify the newly-appended entry
-        # afterward.  We cannot use len() because _cleanup_stale_cache_entries runs
-        # inside handle_rf_log_data and replaces recent_rf_data with a new filtered
-        # list — so len can decrease even when a new entry was added.
-        t_before = time.time()
-
-        assert self._original_handle_rf_log_data is not None
-        result = await self._original_handle_rf_log_data(event, metadata)
-
-        if self.network_observer is not None:
-            try:
-                rf_list = getattr(mh, "recent_rf_data", [])
-                # The newly-appended entry (if any) will have timestamp >= t_before.
-                # Entries added before this call will all be < t_before.
-                if rf_list and rf_list[-1].get("timestamp", 0) >= t_before:
-                    routing_info = rf_list[-1].get("routing_info") or {}
-                    route_type = routing_info.get("route_type", "")
-                    path_nodes = routing_info.get("path_nodes", [])
-                    if route_type == "DIRECT":
-                        # DIRECT packets are DMs overheard on RF — the bot is not
-                        # a participant. Nearby DMs naturally route through the same
-                        # local feeder as everything else, so observing their paths
-                        # would inflate that feeder's significance score without
-                        # reflecting its role in shared flood infrastructure.
-                        # Significance scoring is only meaningful for flood traffic.
-                        logger.debug(
-                            "NetworkObserver skipping DIRECT packet (overheard DM): %s",
-                            path_nodes,
-                        )
-                    elif path_nodes:
-                        self.network_observer.observe_path(path_nodes)
-                        logger.debug(
-                            "NetworkObserver fed %d path nodes from RF log: %s",
-                            len(path_nodes),
-                            path_nodes,
-                        )
-            except Exception:
-                pass  # Never let observer errors block the original handler
-
-        return result
 
     # ------------------------------------------------------------------
     # send_response patch — coordinator bidding + reporting
@@ -187,22 +104,35 @@ class MessageInterceptor:
         words = (message.content or "").split()
         content_prefix = words[0][:50] if words else ""
 
-        # Get path metrics for proximity scoring
-        outbound_hops, path_significance = await self._get_path_metrics(message)
+        # Get path metrics for delivery scoring
+        outbound_hops, infrastructure, path_reliability, path_freshness = \
+            await self._get_path_metrics(message)
 
-        # Compute and log the proximity score that will be sent to the coordinator
+        # Compute and log the delivery score that will be sent to the coordinator
         from .coordinator_client import CoordinatorClient as _CC
-        proximity_score = _CC.compute_sender_proximity_score(
+        scoring_cfg = getattr(self.bot, "scoring_config", None)
+        w_hops        = scoring_cfg.hop_weight        if scoring_cfg else 0.50
+        w_infra       = scoring_cfg.infra_weight      if scoring_cfg else 0.25
+        w_reliability = scoring_cfg.reliability_weight if scoring_cfg else 0.15
+        w_freshness   = scoring_cfg.freshness_weight   if scoring_cfg else 0.10
+
+        delivery_score = _CC.compute_delivery_score(
             inbound_hops=message.hops,
             outbound_hops=outbound_hops,
-            path_significance=path_significance,
+            infrastructure=infrastructure,
+            path_reliability=path_reliability,
+            path_freshness=path_freshness,
+            w_hops=w_hops,
+            w_infra=w_infra,
+            w_reliability=w_reliability,
+            w_freshness=w_freshness,
         )
-        path_sig_str = f"{path_significance:.2f}" if path_significance is not None else "N/A"
         logger.info(
             f"Coordinator bid [{content_prefix}] "
             f"in_hops={message.hops} out_hops={outbound_hops} "
-            f"path_sig={path_sig_str} proximity={proximity_score:.3f} "
-            f"snr={message.snr} rssi={message.rssi} path={message.path!r}"
+            f"infra={infrastructure} reliability={path_reliability} "
+            f"freshness={path_freshness} delivery={delivery_score:.3f} "
+            f"path={message.path!r}"
         )
         logger.debug(
             f"Scoring detail sender={message.sender_pubkey or 'unknown'!r:.12} "
@@ -216,12 +146,15 @@ class MessageInterceptor:
             content_prefix=content_prefix,
             is_dm=False,
             timestamp=timestamp,
-            receiver_snr=message.snr,
-            receiver_rssi=message.rssi,
             receiver_hops=message.hops,
-            receiver_path=message.path,
             outbound_hops=outbound_hops,
-            path_significance=path_significance,
+            infrastructure=infrastructure,
+            path_reliability=path_reliability,
+            path_freshness=path_freshness,
+            w_hops=w_hops,
+            w_infra=w_infra,
+            w_reliability=w_reliability,
+            w_freshness=w_freshness,
         )
 
         if should_respond is True:
@@ -237,12 +170,14 @@ class MessageInterceptor:
             await self._report_message(message, bot_responded=False, message_hash=message_hash)
             return True  # don't surface as failure to command
 
-        # Coordinator unreachable — signal-aware fallback delay
-        logger.info("Coordinator unreachable, using signal-aware fallback")
+        # Coordinator unreachable — delivery-score-aware fallback delay
+        logger.info("Coordinator unreachable, using delivery-score-aware fallback")
         await self.fallback.wait_before_responding_with_signal(
             hops=message.hops,
             outbound_hops=outbound_hops,
-            path_significance=path_significance,
+            infrastructure=infrastructure,
+            path_reliability=path_reliability,
+            path_freshness=path_freshness,
         )
         result = await self._original_send_response(message, content, **kwargs)
         if hasattr(self.bot, "messages_responded_count"):
@@ -254,39 +189,89 @@ class MessageInterceptor:
     # Path metrics
     # ------------------------------------------------------------------
 
-    async def _get_path_metrics(self, message) -> tuple[Optional[int], Optional[float]]:
-        """Return (outbound_hops, path_significance) for the message sender."""
-        outbound_hops: Optional[int] = None
-        path_significance: Optional[float] = None
+    async def _get_path_metrics(
+        self, message
+    ) -> tuple[Optional[int], Optional[float], Optional[float], Optional[float]]:
+        """
+        Return (outbound_hops, infrastructure, path_reliability, path_freshness).
+        All values may be None; None is treated as neutral (0.5) in scoring.
+        Sources: complete_contact_tracking, mesh_connections, observed_paths.
+        """
+        sender_pubkey  = message.sender_pubkey or ""
+        sender_prefix8 = sender_pubkey[:8].upper() if sender_pubkey else ""
+        sender_prefix2 = sender_pubkey[:2].lower()  if sender_pubkey else ""
+        path_nodes = CoordinatorClient.parse_path_nodes(getattr(message, "path", None))
 
-        # Query outbound hop count from DB
-        try:
-            sender_pubkey = message.sender_pubkey or ""
-            if sender_pubkey:
+        outbound_hops:    Optional[int]   = None
+        infrastructure:   Optional[float] = None
+        path_reliability: Optional[float] = None
+        path_freshness:   Optional[float] = None
+
+        # --- outbound_hops from complete_contact_tracking ---
+        if sender_prefix8:
+            try:
                 rows = await self.bot.db_manager.aexecute_query(
-                    """
-                    SELECT out_path_len FROM complete_contact_tracking
-                    WHERE pubkey_prefix = ?
-                    ORDER BY last_seen DESC
-                    LIMIT 1
-                    """,
-                    (sender_pubkey[:8],),
+                    """SELECT out_path_len FROM complete_contact_tracking
+                       WHERE public_key LIKE ? AND out_path_len IS NOT NULL
+                       ORDER BY last_heard DESC LIMIT 1""",
+                    (sender_prefix8 + "%",),
                     fetch=True,
                 )
                 if rows and rows[0][0] is not None:
                     outbound_hops = int(rows[0][0])
-        except Exception as e:
-            logger.debug(f"Could not fetch outbound_hops: {e}")
-
-        # Compute path significance from observer
-        if self.network_observer is not None and getattr(message, "path", None):
-            try:
-                path_nodes = CoordinatorClient.parse_path_nodes(message.path)
-                path_significance = self.network_observer.compute_path_significance(path_nodes)
             except Exception as e:
-                logger.debug(f"Could not compute path_significance: {e}")
+                logger.debug(f"Could not fetch outbound_hops: {e}")
 
-        return outbound_hops, path_significance
+        # --- infrastructure from mesh_connections fan-in ---
+        # Normalized against the total distinct nodes in the network (not the max
+        # fan-in). This prevents saturation: a local feeder that only ever routes
+        # for 2 nodes scores ~0.36 in a 20-node network and ~0.24 in a 100-node
+        # network — it cannot inflate its way to 1.0 as data accumulates.
+        # log1p compresses the power-law skew; backbone nodes (high fraction of
+        # total) naturally anchor near 1.0 while local feeders stay proportionally low.
+        if path_nodes:
+            try:
+                node_lower = [n.lower()[:2] for n in path_nodes]
+                placeholders = ",".join("?" * len(node_lower))
+                rows = await self.bot.db_manager.aexecute_query(
+                    f"""SELECT to_prefix,
+                               COUNT(DISTINCT from_prefix) AS fan_in,
+                               (SELECT COUNT(DISTINCT from_prefix)
+                                FROM mesh_connections) AS total_nodes
+                        FROM mesh_connections
+                        WHERE to_prefix IN ({placeholders})
+                        GROUP BY to_prefix""",
+                    tuple(node_lower),
+                    fetch=True,
+                )
+                if rows:
+                    total_nodes = max(rows[0][2] or 1, 1)
+                    log_total = math.log1p(total_nodes)
+                    scores = [math.log1p(r[1] or 0) / log_total for r in rows]
+                    infrastructure = sum(scores) / len(scores)
+            except Exception as e:
+                logger.debug(f"Could not compute infrastructure score: {e}")
+
+        # --- path_reliability + path_freshness from observed_paths ---
+        if sender_prefix2:
+            try:
+                rows = await self.bot.db_manager.aexecute_query(
+                    """SELECT observation_count,
+                              CAST((julianday('now') - julianday(last_seen)) * 24 AS REAL)
+                       FROM observed_paths
+                       WHERE from_prefix = ? AND packet_type != 'ADVERT'
+                       ORDER BY observation_count DESC LIMIT 1""",
+                    (sender_prefix2,),
+                    fetch=True,
+                )
+                if rows:
+                    obs_count, age_hours = rows[0]
+                    path_reliability = min(1.0, (obs_count or 1) / 20.0)
+                    path_freshness   = math.exp(-(age_hours or 999) / 6.0)
+            except Exception as e:
+                logger.debug(f"Could not fetch path reliability/freshness: {e}")
+
+        return outbound_hops, infrastructure, path_reliability, path_freshness
 
     # ------------------------------------------------------------------
     # Reporting
@@ -337,6 +322,4 @@ class MessageInterceptor:
         self.bot.command_manager.send_response = self._original_send_response
         if self._original_process_message is not None and hasattr(self.bot, "message_handler"):
             self.bot.message_handler.process_message = self._original_process_message
-        if self._original_handle_rf_log_data is not None and hasattr(self.bot, "message_handler"):
-            self.bot.message_handler.handle_rf_log_data = self._original_handle_rf_log_data
         logger.info("Message interceptor removed")

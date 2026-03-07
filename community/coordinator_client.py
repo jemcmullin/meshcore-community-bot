@@ -186,19 +186,21 @@ class CoordinatorClient:
         content_prefix: str = "",
         is_dm: bool = False,
         timestamp: int = 0,
-        receiver_snr: Optional[float] = None,
-        receiver_rssi: Optional[int] = None,
         receiver_hops: Optional[int] = None,
-        receiver_path: Optional[str] = None,
         outbound_hops: Optional[int] = None,
-        path_significance: Optional[float] = None,
-        hop_weight: float = 0.6,
-        path_sig_weight: float = 0.4,
+        infrastructure: Optional[float] = None,
+        path_reliability: Optional[float] = None,
+        path_freshness: Optional[float] = None,
+        w_hops: float = 0.50,
+        w_infra: float = 0.25,
+        w_reliability: float = 0.15,
+        w_freshness: float = 0.10,
     ) -> Optional[bool]:
         """Ask coordinator if this bot should respond to a message.
 
-        Includes signal data (SNR, RSSI, hops, path) for the coordinator's
-        bidding window to evaluate path quality across competing bots.
+        Computes a delivery_score ∈ [0, 1] from hop count, infrastructure
+        quality, path reliability and freshness, then submits it to the
+        coordinator's bidding window. The bot with the highest score responds.
 
         Returns:
             True if should respond, False if should not, None if coordinator unreachable.
@@ -215,24 +217,18 @@ class CoordinatorClient:
             "is_dm": is_dm,
             "timestamp": timestamp,
         }
-        # Include signal data (analytics only)
-        if receiver_snr is not None:
-            payload["receiver_snr"] = receiver_snr
-        if receiver_rssi is not None:
-            payload["receiver_rssi"] = receiver_rssi
-        if receiver_hops is not None:
-            payload["receiver_hops"] = receiver_hops
-        if receiver_path is not None:
-            payload["receiver_path"] = receiver_path
-        # Include computed proximity score as primary bidding field
-        sender_proximity_score = self.compute_sender_proximity_score(
+        # Pre-computed delivery score is the sole bidding field
+        payload["delivery_score"] = self.compute_delivery_score(
             inbound_hops=receiver_hops,
             outbound_hops=outbound_hops,
-            path_significance=path_significance,
-            hop_weight=hop_weight,
-            path_sig_weight=path_sig_weight,
+            infrastructure=infrastructure,
+            path_reliability=path_reliability,
+            path_freshness=path_freshness,
+            w_hops=w_hops,
+            w_infra=w_infra,
+            w_reliability=w_reliability,
+            w_freshness=w_freshness,
         )
-        payload["sender_proximity_score"] = sender_proximity_score
 
         try:
             client = await self._ensure_client()
@@ -302,37 +298,36 @@ class CoordinatorClient:
         return [n.strip().upper() for n in path_string.split(",") if n.strip()]
 
     @staticmethod
-    def compute_sender_proximity_score(
+    def compute_delivery_score(
         inbound_hops: Optional[int],
         outbound_hops: Optional[int],
-        path_significance: Optional[float],
-        hop_weight: float = 0.6,
-        path_sig_weight: float = 0.4,
+        infrastructure: Optional[float],
+        path_reliability: Optional[float],
+        path_freshness: Optional[float],
+        w_hops: float = 0.35,
+        w_infra: float = 0.30,
+        w_reliability: float = 0.20,
+        w_freshness: float = 0.15,
     ) -> float:
-        """Compute a blended proximity score for bidding.
+        """Compute a delivery score ∈ [0, 1] for coordinator bidding.
 
-        Higher score = this bot is closer to / has a better path to sender.
+        Higher score = this bot has a better chance of reaching the sender.
+        Unknown components default to 0.5 (neutral) — missing data neither helps nor hurts.
 
-        hop_score = max(0, 1 - best_hops * 0.25)
-        best_hops = min(inbound_hops, outbound_hops) if both available
-        blended   = hop_score * hop_weight + path_significance * path_sig_weight
+        Components:
+          hop_score        = max(0, 1 - best_hops * 0.35)  [0 hops=1.0, 3 hops=0.0]
+          infrastructure   = log1p(fan_in) / log1p(total_nodes)
+          path_reliability = min(1, obs_count / 20)
+          path_freshness   = exp(-age_hours / 6)
         """
-        best_hops: Optional[int] = None
-        if inbound_hops is not None and outbound_hops is not None:
-            best_hops = min(inbound_hops, outbound_hops)
-        elif inbound_hops is not None:
-            best_hops = inbound_hops
-        elif outbound_hops is not None:
-            best_hops = outbound_hops
+        hops = [h for h in (inbound_hops, outbound_hops) if h is not None]
+        hop_score = max(0.0, 1.0 - min(hops) * 0.35) if hops else 0.5
 
-        if best_hops is not None:
-            hop_score = max(0.0, 1.0 - best_hops * 0.25)
-        else:
-            hop_score = 0.5  # unknown — neutral
+        infra = infrastructure   if infrastructure   is not None else 0.5
+        rel   = path_reliability if path_reliability is not None else 0.5
+        fresh = path_freshness   if path_freshness   is not None else 0.5
 
-        sig = path_significance if path_significance is not None else 0.5
-
-        return hop_score * hop_weight + sig * path_sig_weight
+        return hop_score * w_hops + infra * w_infra + rel * w_reliability + fresh * w_freshness
 
     @staticmethod
     def compute_message_hash(
