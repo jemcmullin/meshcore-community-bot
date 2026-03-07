@@ -37,7 +37,7 @@ class ScoringCommand(BaseCommand):
                 counts = node_counts[node_id]
                 lines.append(
                     f"{rank}. {node_id} {sig:.2f} "
-                    f"(seen={counts['total']} lh={counts['last_hop']})"
+                    f"(seen={counts['total']} last={counts['last_hop']})"
                 )
 
             await self.send_response(message, "\n".join(lines))
