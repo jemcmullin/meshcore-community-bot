@@ -50,13 +50,13 @@ class ScoringCommand(BaseCommand):
                 
                 # Quality rating
                 if score >= 0.85:
-                    rating = "⭐"
+                    rating = "🟢"
                 elif score >= 0.65:
-                    rating = "●"
+                    rating = "🟡"
                 elif score >= 0.45:
-                    rating = "○"
+                    rating = "🟠"
                 else:
-                    rating = "◐"
+                    rating = "🔴"
                 
                 lines.append(f"{node_id.upper()} {rating}{score:.2f} {fan_in}/{total_nodes} {pct:.0f}%")
 
