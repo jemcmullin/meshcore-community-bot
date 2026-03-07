@@ -1,5 +1,6 @@
 """Scoring command - shows top repeaters by infrastructure score (mesh_connections fan-in)."""
 
+import asyncio
 import math
 
 from modules.commands.base_command import BaseCommand
@@ -17,22 +18,25 @@ class ScoringCommand(BaseCommand):
 
     async def execute(self, message: MeshMessage) -> bool:
         try:
-            rows = await self.bot.db_manager.aexecute_query(
-                """SELECT to_prefix,
-                          COUNT(DISTINCT from_prefix) AS fan_in,
-                          (SELECT COUNT(DISTINCT from_prefix)
-                           FROM mesh_connections) AS total_nodes
-                   FROM mesh_connections
-                   GROUP BY to_prefix
-                   ORDER BY fan_in DESC
-                   LIMIT 5""",
-                fetch=True,
-            )
+            def get_repeaters():
+                return self.bot.db_manager.execute_query(
+                    """SELECT to_prefix,
+                              COUNT(DISTINCT from_prefix) AS fan_in,
+                              (SELECT COUNT(DISTINCT from_prefix)
+                               FROM mesh_connections) AS total_nodes
+                       FROM mesh_connections
+                       GROUP BY to_prefix
+                       ORDER BY fan_in DESC
+                       LIMIT 5"""
+                )
+            
+            rows = await asyncio.to_thread(get_repeaters)
             if not rows:
                 await self.send_response(message, "No repeater data available yet")
                 return True
 
-            total_nodes = max(rows[0][2] or 1, 1)
+            # Extract values from dict rows (execute_query returns List[Dict])
+            total_nodes = max(rows[0].get('total_nodes') or 1, 1)
             log_total = math.log1p(total_nodes)
 
             lines = ["**Top Repeaters (Infrastructure Score)**", ""]
@@ -42,7 +46,9 @@ class ScoringCommand(BaseCommand):
             lines.append("")
 
             # Detailed rankings
-            for rank, (node_id, fan_in, _) in enumerate(rows, start=1):
+            for rank, row in enumerate(rows, start=1):
+                node_id = row['to_prefix']
+                fan_in = row['fan_in']
                 score = math.log1p(fan_in or 0) / log_total
                 percentage = (fan_in / total_nodes) * 100 if total_nodes > 0 else 0
                 
