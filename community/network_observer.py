@@ -131,7 +131,6 @@ class NetworkObserver:
                 GROUP BY node_id
                 """,
                 (cutoff,),
-                fetch=True,
             )
             if rows:
                 for node_id, total, last_hop in rows:
