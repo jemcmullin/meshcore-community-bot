@@ -25,6 +25,15 @@ def patch_web_viewer_integration(bot) -> None:
     if getattr(wv, "_community_wrapper_enabled", False):
         return
 
+    # If the viewer already started (e.g. auto_start=True in config), stop it now
+    # so MeshCoreBot.start() can restart it through the community wrapper.
+    if getattr(wv, "running", False):
+        bot.logger.info(
+            "Web viewer already running before community patch applied "
+            "(auto_start=True in config); stopping so community wrapper can take over"
+        )
+        wv.stop_viewer()
+
     def _run_viewer_with_community_wrapper(self):
         """Run the web viewer using community wrapper entrypoint."""
         stdout_file = None
