@@ -339,11 +339,14 @@ class MessageInterceptor:
                 logger.debug(f"Could not compute infrastructure score: {e}")
 
         # --- path_reliability + path_freshness from observed_paths ---
+        # reliability = log1p(obs) / log1p(max_obs) — normalised to the busiest
+        # node seen so far, so the scale grows automatically as the mesh gets busier.
         if sender_prefix2:
             try:
                 rows = await self.bot.db_manager.aexecute_query(
                     """SELECT observation_count,
-                              CAST((julianday('now') - julianday(last_seen)) * 24 AS REAL)
+                              CAST((julianday('now') - julianday(last_seen)) * 24 AS REAL),
+                              (SELECT MAX(observation_count) FROM observed_paths)
                        FROM observed_paths
                        WHERE from_prefix = ?
                        ORDER BY observation_count DESC LIMIT 1""",
@@ -351,8 +354,9 @@ class MessageInterceptor:
                     fetch=True,
                 )
                 if rows:
-                    obs_count, age_hours = rows[0]
-                    path_reliability = min(1.0, (obs_count or 1) / 20.0)
+                    obs_count, age_hours, max_obs = rows[0]
+                    max_obs = max(max_obs or 1, 1)
+                    path_reliability = math.log1p(obs_count or 0) / math.log1p(max_obs)
                     path_freshness   = math.exp(-(age_hours or 999) / 24.0)
             except Exception as e:
                 logger.debug(f"Could not fetch path reliability/freshness: {e}")
