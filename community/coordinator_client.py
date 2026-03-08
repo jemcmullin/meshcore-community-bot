@@ -194,6 +194,11 @@ class CoordinatorClient:
         is_dm: bool = False,
         timestamp: int = 0,
         receiver_hops: Optional[int] = None,
+        # COMPAT: forwarded to upstream API for logging; not used in delivery scoring
+        receiver_snr: Optional[float] = None,
+        receiver_rssi: Optional[int] = None,
+        receiver_path: Optional[str] = None,
+        # --- new delivery-score inputs ---
         outbound_hops: Optional[int] = None,
         infrastructure: Optional[float] = None,
         path_reliability: Optional[float] = None,
@@ -224,6 +229,15 @@ class CoordinatorClient:
             "is_dm": is_dm,
             "timestamp": timestamp,
         }
+        # COMPAT: pass raw signal fields through to the upstream API for logging/analysis.
+        # These are not used in local delivery scoring; retained for API backward compatibility.
+        if receiver_snr is not None:
+            payload["receiver_snr"] = receiver_snr
+        if receiver_rssi is not None:
+            payload["receiver_rssi"] = receiver_rssi
+        if receiver_path is not None:
+            payload["receiver_path"] = receiver_path
+
         # Pre-computed delivery score is the sole bidding field
         payload["delivery_score"] = self.compute_delivery_score(
             inbound_hops=receiver_hops,
