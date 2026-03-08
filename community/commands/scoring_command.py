@@ -4,7 +4,7 @@ Significance = hop_score×0.35 + infra×0.30 + reliability×0.20 + freshness×0.
 
 Components (same weights as coordinator bidding):
   hop_score   = max(0, 1 - out_hops × 0.35)  [1.0 at 1 hop, 0 at 3+ hops; 0.5 if unknown]
-  infra       = reach × (0.5 + 0.5 × depth_frac)  [topology quality]
+  infra       = reach × depth_frac  [topology quality; 0 for co-located/shallow feeders]
   reliability = log1p(relay_obs) / log1p(max_relay_obs)  [how often seen in paths]
   freshness   = exp(-age_hours / 24)  [how recently seen]
 
@@ -91,7 +91,7 @@ class ScoringCommand(BaseCommand):
                 age_hours   = float(row.get('age_hours') or 999)
                 depth_frac  = max(avg_depth - 1, 0) / depth_range
                 reach       = math.log1p(fan_in) / log_max_fan
-                infra       = reach * (0.5 + 0.5 * depth_frac)
+                infra       = reach * depth_frac
                 reliability = math.log1p(relay_obs) / log_max_relay
                 freshness   = math.exp(-age_hours / 24.0)
                 hop_score   = max(0.0, 1.0 - int(out_hops) * 0.35) if out_hops is not None else 0.5

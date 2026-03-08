@@ -75,7 +75,7 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
             <th title="hop_score×0.35 + infra×0.30 + reliability×0.20 + freshness×0.15">Significance</th>
             <th title="min outbound hops to this node (complete_contact_tracking)">Out hops</th>
             <th title="max(0, 1 − out_hops×0.35)">Hop score</th>
-            <th title="reach × (0.5 + 0.5×depth_frac) — topology quality">Infra</th>
+            <th title="reach × depth_frac — topology quality; 0 for co-located/shallow feeders">Infra</th>
             <th title="log1p(relay_obs)/log1p(max_relay_obs) — path observation frequency">Reliability</th>
             <th title="exp(−age_hours/24) — how recently seen in mesh_connections">Freshness</th>
             <th>Fan-in</th>
@@ -267,7 +267,7 @@ def _community_metrics_impl(viewer):
         # Answers: "if a message arrives through this relay, how strong will this bot's bid be?"
         #
         # hop_score   = max(0, 1 - out_hops × 0.35)  from complete_contact_tracking
-        # infra       = reach × (0.5 + 0.5 × depth_frac)  — topology quality
+        # infra       = reach × depth_frac  — topology quality; 0 for co-located/shallow feeders
         # reliability = log1p(relay_obs) / log1p(max_relay_obs)  — frequency in paths
         # freshness   = exp(-age_hours / 24)  — how recently seen in mesh_connections
         if "mesh_connections" in tables:
@@ -319,7 +319,7 @@ def _community_metrics_impl(viewer):
                 age_hours   = float(r["age_hours"] or 999)
                 depth_frac  = max(avg_depth - 1, 0) / depth_range
                 reach       = math.log1p(fan_in) / log_max_fan
-                infra       = reach * (0.5 + 0.5 * depth_frac)
+                infra       = reach * depth_frac
                 reliability = math.log1p(obs) / log_max_relay
                 freshness   = math.exp(-age_hours / 24.0)
                 hop_score   = max(0.0, 1.0 - int(out_hops) * 0.35) if out_hops is not None else 0.5
