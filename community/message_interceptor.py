@@ -295,13 +295,14 @@ class MessageInterceptor:
             except Exception as e:
                 logger.debug(f"Could not fetch outbound_hops: {e}")
 
-        # --- infrastructure from mesh_connections fan-in ---
-        # Normalized against the total distinct nodes in the network (not the max
-        # fan-in). This prevents saturation: a local feeder that only ever routes
-        # for 2 nodes scores ~0.36 in a 20-node network and ~0.24 in a 100-node
-        # network — it cannot inflate its way to 1.0 as data accumulates.
-        # log1p compresses the power-law skew; backbone nodes (high fraction of
-        # total) naturally anchor near 1.0 while local feeders stay proportionally low.
+        # --- infrastructure score: log1p(fan_in)/log1p(max_fan_in) × depth_fraction ---
+        # Normalised to [0, 1] so it contributes its stated 30% weight in delivery_score.
+        # log1p(fan_in)/log1p(max_fan_in) = reach fraction (0–1, compressed).
+        # depth_fraction = (avg_depth - 1) / (max_depth - 1)
+        #   0 when relay always appears at hop 1 (co-located feeder)
+        #   1 when relay appears at the deepest average position in the network
+        # Raw display scores (scoring_command, web_viewer) keep log1p(fan_in) × depth_frac;
+        # only this delivery-scoring path is normalised.
         if path_nodes:
             try:
                 node_lower = [n.lower()[:2] for n in path_nodes]
@@ -309,8 +310,14 @@ class MessageInterceptor:
                 rows = await self.bot.db_manager.aexecute_query(
                     f"""SELECT to_prefix,
                                COUNT(DISTINCT from_prefix) AS fan_in,
-                               (SELECT COUNT(DISTINCT from_prefix)
-                                FROM mesh_connections) AS total_nodes
+                               AVG(COALESCE(avg_hop_position, 1)) AS avg_depth,
+                               (SELECT MAX(d)
+                                FROM (SELECT AVG(COALESCE(avg_hop_position, 1)) AS d
+                                      FROM mesh_connections
+                                      GROUP BY to_prefix)) AS max_depth,
+                               (SELECT MAX(COUNT(DISTINCT from_prefix))
+                                FROM mesh_connections
+                                GROUP BY to_prefix) AS max_fan_in
                         FROM mesh_connections
                         WHERE to_prefix IN ({placeholders})
                         GROUP BY to_prefix""",
@@ -318,10 +325,15 @@ class MessageInterceptor:
                     fetch=True,
                 )
                 if rows:
-                    total_nodes = max(rows[0][2] or 1, 1)
-                    log_total = math.log1p(total_nodes)
-                    scores = [math.log1p(r[1] or 0) / log_total for r in rows]
-                    infrastructure = sum(scores) / len(scores)
+                    max_depth    = max(rows[0][3] or 1.0, 1.0)
+                    depth_range  = max(max_depth - 1, 0.001)
+                    max_fan_in   = max(rows[0][4] or 1, 1)
+                    log_max_fan  = math.log1p(max_fan_in)
+                    node_scores  = []
+                    for r in rows:
+                        depth_frac = max((r[2] or 1.0) - 1, 0) / depth_range
+                        node_scores.append((math.log1p(r[1] or 0) / log_max_fan) * depth_frac)
+                    infrastructure = sum(node_scores) / len(node_scores)
             except Exception as e:
                 logger.debug(f"Could not compute infrastructure score: {e}")
 

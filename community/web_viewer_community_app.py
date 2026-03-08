@@ -44,9 +44,17 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
     th, td { text-align:left; padding:6px; border-bottom:1px solid var(--line); font-size:14px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#eaf2ea; border:1px solid var(--line); margin-right:6px; margin-bottom:6px; font-size:12px; }
+    nav { background:var(--card); border-bottom:1px solid var(--line); padding:0 16px; display:flex; gap:16px; align-items:center; }
+    nav a { display:inline-block; padding:12px 8px; color:var(--a); text-decoration:none; font-size:14px; border-bottom:2px solid transparent; }
+    nav a.active { border-bottom-color:var(--a); font-weight:600; }
+    nav a:hover { color:var(--ink); }
   </style>
 </head>
 <body>
+  <nav>
+    <a href="/">Dashboard</a>
+    <a href="/community" class="active">Community</a>
+  </nav>
   <div class=\"wrap\">
     <h1>Community Metrics</h1>
     <div class=\"meta\" id=\"meta\">Loading...</div>
@@ -62,9 +70,10 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
       <section class=\"card\" style=\"grid-column: 1/-1;\">
         <h3>Top Repeaters</h3>
         <table>
-          <thead><tr><th>Node</th><th>Fan-in</th><th>Score</th><th>Coverage</th></tr></thead>
-          <tbody id=\"repeaters\"></tbody>
+          <thead><tr><th>Node</th><th>Fan-in</th><th>Seen</th><th>Avg depth</th><th title="log1p(fan_in)/log1p(max_fan_in)">Reach</th><th title="(avg_depth-1)/(max_depth-1)">Depth frac</th><th title="reach × depth_frac">Score</th><th>Coverage</th></tr></thead>
+          <tbody id="repeaters"></tbody>
         </table>
+        <p id="repeaters-caption" style="font-size:12px;color:var(--muted);margin:6px 0 0;"></p>
       </section>
       <section class=\"card\" style=\"grid-column: 1/-1;\">
         <h3>Recent Bid Events</h3>
@@ -89,14 +98,23 @@ async function refresh() {
   document.getElementById('coord').innerHTML = Object.entries(data.coordination.stage_counts)
     .map(([k, v]) => `<span class=\"pill\">${k}: ${v}</span>`).join('') || '<span class=\"pill\">No events</span>';
 
-  document.getElementById('repeaters').innerHTML = data.top_repeaters.map(r => `
+  const reps = data.top_repeaters;
+  document.getElementById('repeaters').innerHTML = reps.map(r => `
     <tr>
-      <td class=\"mono\">${r.node}</td>
+      <td class="mono">${r.node}</td>
       <td>${r.fan_in}</td>
+      <td>${r.obs}</td>
+      <td>${r.avg_depth}</td>
+      <td>${r.reach.toFixed(3)}</td>
+      <td>${r.depth_frac.toFixed(3)}</td>
       <td>${r.score.toFixed(3)}</td>
       <td>${r.coverage_pct.toFixed(0)}%</td>
     </tr>
-  `).join('') || '<tr><td colspan=\"4\">No repeater data</td></tr>';
+  `).join('') || '<tr><td colspan="8">No repeater data</td></tr>';
+  if (reps.length && reps[0]._max_fan_in !== undefined) {
+    document.getElementById('repeaters-caption').textContent =
+      `max fan-in: ${reps[0]._max_fan_in} · max depth: ${reps[0]._max_depth} · score = reach × depth_frac`;
+  }
 
   document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => `
     <tr>
@@ -210,32 +228,62 @@ document.addEventListener('DOMContentLoaded', function () {
                 total_nodes = int((row["total_nodes"] if row else 0) or 0)
             total_nodes = max(total_nodes, 1)
 
-            # Top repeaters by infrastructure score
+            # Top repeaters: score = (log1p(fan_in) / log1p(max_fan_in)) × depth_fraction  [0, 1]
+            # fan_in         = distinct origin nodes routing through this relay
+            # max_fan_in     = highest fan_in in the network (normalises reach to 0-1)
+            # depth_fraction = (avg_hop_position - 1) / (max_depth - 1)
+            #                  0 for hop-1 feeders, 1 for deepest relay in network
+            # Scale: backbone ~0.65-1.0, distributor ~0.30-0.65, feeder ~0.
             if "mesh_connections" in tables:
                 cur.execute(
                     """
                     SELECT to_prefix,
                            COUNT(DISTINCT from_prefix) AS fan_in,
-                           (SELECT COUNT(DISTINCT from_prefix) FROM mesh_connections) AS n
+                           SUM(observation_count) AS obs,
+                           AVG(COALESCE(avg_hop_position, 1)) AS avg_depth,
+                           (SELECT MAX(d)
+                            FROM (SELECT AVG(COALESCE(avg_hop_position, 1)) AS d
+                                  FROM mesh_connections
+                                  GROUP BY to_prefix)) AS max_depth,
+                           (SELECT MAX(COUNT(DISTINCT from_prefix))
+                            FROM mesh_connections
+                            GROUP BY to_prefix) AS max_fan_in
                     FROM mesh_connections
                     GROUP BY to_prefix
                     ORDER BY fan_in DESC
-                    LIMIT 10
+                    LIMIT 50
                     """
                 )
                 rows = cur.fetchall()
-                log_total = math.log1p(total_nodes)
+                max_depth   = max(float(rows[0]["max_depth"] or 1.0), 1.0) if rows else 1.0
+                depth_range = max(max_depth - 1, 0.001)
+                max_fan_in  = max(int(rows[0]["max_fan_in"] or 1), 1) if rows else 1
+                log_max_fan = math.log1p(max_fan_in)
                 for r in rows:
-                    fan_in = int(r["fan_in"] or 0)
-                    score = math.log1p(fan_in) / log_total if log_total > 0 else 0.0
+                    fan_in    = int(r["fan_in"] or 0)
+                    obs       = int(r["obs"] or 0)
+                    avg_depth = float(r["avg_depth"] or 1)
+                    depth_frac = max(avg_depth - 1, 0) / depth_range
+                    score = (math.log1p(fan_in) / log_max_fan) * depth_frac
+                    reach = math.log1p(fan_in) / log_max_fan
                     top_repeaters.append(
                         {
                             "node": (r["to_prefix"] or "").upper(),
                             "fan_in": fan_in,
+                            "obs": obs,
+                            "avg_depth": round(avg_depth, 2),
+                            "reach": round(reach, 3),
+                            "depth_frac": round(depth_frac, 3),
                             "score": score,
                             "coverage_pct": (fan_in / total_nodes) * 100.0,
                         }
                     )
+                # Re-sort by score (SQL ordered by fan_in; score order differs)
+                top_repeaters.sort(key=lambda x: x["score"], reverse=True)
+                top_repeaters = top_repeaters[:10]
+                if top_repeaters:
+                    top_repeaters[0]["_max_fan_in"] = max_fan_in
+                    top_repeaters[0]["_max_depth"] = round(max_depth, 2)
 
             # Last 60 minutes of coordination snapshots injected by community layer
             if "packet_stream" in tables:
