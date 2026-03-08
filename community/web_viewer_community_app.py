@@ -70,7 +70,18 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
       <section class=\"card\" style=\"grid-column: 1/-1;\">
         <h3>Top Repeaters</h3>
         <table>
-          <thead><tr><th>Node</th><th>Fan-in</th><th>Seen</th><th>Avg depth</th><th title="log1p(fan_in)/log1p(max_fan_in)">Reach</th><th title="(avg_depth-1)/(max_depth-1)">Depth frac</th><th title="reach × depth_frac">Score</th><th>Coverage</th></tr></thead>
+          <thead><tr>
+            <th>Node</th>
+            <th title="hop_score×0.35 + infra×0.30 + reliability×0.20 + freshness×0.15">Significance</th>
+            <th title="min outbound hops to this node (complete_contact_tracking)">Out hops</th>
+            <th title="max(0, 1 − out_hops×0.35)">Hop score</th>
+            <th title="reach × (0.5 + 0.5×depth_frac) — topology quality">Infra</th>
+            <th title="log1p(relay_obs)/log1p(max_relay_obs) — path observation frequency">Reliability</th>
+            <th title="exp(−age_hours/24) — how recently seen in mesh_connections">Freshness</th>
+            <th>Fan-in</th>
+            <th>Seen</th>
+            <th>Coverage</th>
+          </tr></thead>
           <tbody id="repeaters"></tbody>
         </table>
         <p id="repeaters-caption" style="font-size:12px;color:var(--muted);margin:6px 0 0;"></p>
@@ -112,18 +123,20 @@ async function refresh() {
     document.getElementById('repeaters').innerHTML = reps.map(r => `
       <tr>
         <td class="mono">${r.node}</td>
+        <td><b>${r.significance.toFixed(3)}</b></td>
+        <td>${r.out_hops !== null && r.out_hops !== undefined ? r.out_hops : '?'}</td>
+        <td>${r.hop_score.toFixed(3)}</td>
+        <td>${r.infra.toFixed(3)}</td>
+        <td>${r.reliability.toFixed(3)}</td>
+        <td>${r.freshness.toFixed(3)}</td>
         <td>${r.fan_in}</td>
         <td>${r.obs}</td>
-        <td>${r.avg_depth}</td>
-        <td>${r.reach.toFixed(3)}</td>
-        <td>${r.depth_frac.toFixed(3)}</td>
-        <td>${r.score.toFixed(3)}</td>
         <td>${r.coverage_pct.toFixed(0)}%</td>
       </tr>
-    `).join('') || '<tr><td colspan="8">No repeater data</td></tr>';
+    `).join('') || '<tr><td colspan="10">No repeater data</td></tr>';
     if (reps.length && reps[0]._max_fan_in !== undefined) {
       document.getElementById('repeaters-caption').textContent =
-        `max fan-in: ${reps[0]._max_fan_in} · max depth: ${reps[0]._max_depth} · score = reach × depth_frac`;
+        `significance = hop_score×0.35 + infra×0.30 + reliability×0.20 + freshness×0.15 · max fan-in: ${reps[0]._max_fan_in} · max depth: ${reps[0]._max_depth}`;
     }
 
     document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => `
@@ -249,19 +262,22 @@ def _community_metrics_impl(viewer):
             total_nodes = int((row["total_nodes"] if row else 0) or 0)
         total_nodes = max(total_nodes, 1)
 
-        # Top repeaters: score = (log1p(fan_in) / log1p(max_fan_in)) × depth_fraction  [0, 1]
-        # fan_in         = distinct origin nodes routing through this relay
-        # max_fan_in     = highest fan_in in the network (normalises reach to 0-1)
-        # depth_fraction = (avg_hop_position - 1) / (max_depth - 1)
-        #                  0 for hop-1 feeders, 1 for deepest relay in network
-        # Scale: backbone ~0.65-1.0, distributor ~0.30-0.65, feeder ~0.
+        # Significance = hop_score×0.35 + infra×0.30 + reliability×0.20 + freshness×0.15
+        # Uses the same four components and weights as coordinator bidding.
+        # Answers: "if a message arrives through this relay, how strong will this bot's bid be?"
+        #
+        # hop_score   = max(0, 1 - out_hops × 0.35)  from complete_contact_tracking
+        # infra       = reach × (0.5 + 0.5 × depth_frac)  — topology quality
+        # reliability = log1p(relay_obs) / log1p(max_relay_obs)  — frequency in paths
+        # freshness   = exp(-age_hours / 24)  — how recently seen in mesh_connections
         if "mesh_connections" in tables:
             cur.execute(
                 """
-                SELECT to_prefix,
-                       COUNT(DISTINCT from_prefix) AS fan_in,
-                       SUM(observation_count) AS obs,
-                       AVG(COALESCE(avg_hop_position, 1)) AS avg_depth,
+                SELECT mc.to_prefix,
+                       COUNT(DISTINCT mc.from_prefix) AS fan_in,
+                       SUM(mc.observation_count) AS obs,
+                       AVG(COALESCE(mc.avg_hop_position, 1)) AS avg_depth,
+                       CAST((julianday('now') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
                        (SELECT MAX(d)
                         FROM (SELECT AVG(COALESCE(avg_hop_position, 1)) AS d
                               FROM mesh_connections
@@ -269,39 +285,62 @@ def _community_metrics_impl(viewer):
                        (SELECT MAX(c)
                         FROM (SELECT COUNT(DISTINCT from_prefix) AS c
                               FROM mesh_connections
-                              GROUP BY to_prefix)) AS max_fan_in
-                FROM mesh_connections
-                GROUP BY to_prefix
+                              GROUP BY to_prefix)) AS max_fan_in,
+                       (SELECT MAX(s)
+                        FROM (SELECT SUM(observation_count) AS s
+                              FROM mesh_connections
+                              GROUP BY to_prefix)) AS max_relay_obs,
+                       cct.out_hops
+                FROM mesh_connections mc
+                LEFT JOIN (
+                  SELECT LOWER(SUBSTR(public_key, 1, 2)) AS pfx,
+                         MIN(out_path_len) AS out_hops
+                  FROM complete_contact_tracking
+                  WHERE out_path_len IS NOT NULL
+                  GROUP BY pfx
+                ) AS cct ON cct.pfx = mc.to_prefix
+                GROUP BY mc.to_prefix
                 ORDER BY fan_in DESC
                 LIMIT 50
                 """
             )
             rows = cur.fetchall()
-            max_depth   = max(float(rows[0]["max_depth"] or 1.0), 1.0) if rows else 1.0
-            depth_range = max(max_depth - 1, 0.001)
-            max_fan_in  = max(int(rows[0]["max_fan_in"] or 1), 1) if rows else 1
-            log_max_fan = math.log1p(max_fan_in)
+            max_depth      = max(float(rows[0]["max_depth"] or 1.0), 1.0) if rows else 1.0
+            depth_range    = max(max_depth - 1, 0.001)
+            max_fan_in     = max(int(rows[0]["max_fan_in"] or 1), 1) if rows else 1
+            log_max_fan    = math.log1p(max_fan_in)
+            max_relay_obs  = max(int(rows[0]["max_relay_obs"] or 1), 1) if rows else 1
+            log_max_relay  = math.log1p(max_relay_obs)
             for r in rows:
-                fan_in     = int(r["fan_in"] or 0)
-                obs        = int(r["obs"] or 0)
-                avg_depth  = float(r["avg_depth"] or 1)
-                depth_frac = max(avg_depth - 1, 0) / depth_range
-                reach      = math.log1p(fan_in) / log_max_fan
-                score      = reach * depth_frac
+                fan_in      = int(r["fan_in"] or 0)
+                obs         = int(r["obs"] or 0)
+                avg_depth   = float(r["avg_depth"] or 1)
+                out_hops    = r["out_hops"]
+                age_hours   = float(r["age_hours"] or 999)
+                depth_frac  = max(avg_depth - 1, 0) / depth_range
+                reach       = math.log1p(fan_in) / log_max_fan
+                infra       = reach * (0.5 + 0.5 * depth_frac)
+                reliability = math.log1p(obs) / log_max_relay
+                freshness   = math.exp(-age_hours / 24.0)
+                hop_score   = max(0.0, 1.0 - int(out_hops) * 0.35) if out_hops is not None else 0.5
+                significance = hop_score * 0.35 + infra * 0.30 + reliability * 0.20 + freshness * 0.15
                 top_repeaters.append(
                     {
                         "node": (r["to_prefix"] or "").upper(),
                         "fan_in": fan_in,
                         "obs": obs,
                         "avg_depth": round(avg_depth, 2),
-                        "reach": round(reach, 3),
-                        "depth_frac": round(depth_frac, 3),
-                        "score": round(score, 3),
+                        "out_hops": int(out_hops) if out_hops is not None else None,
+                        "hop_score": round(hop_score, 3),
+                        "infra": round(infra, 3),
+                        "reliability": round(reliability, 3),
+                        "freshness": round(freshness, 3),
+                        "significance": round(significance, 3),
                         "coverage_pct": (fan_in / total_nodes) * 100.0,
                     }
                 )
-            # Re-sort by score (SQL ordered by fan_in; score order differs)
-            top_repeaters.sort(key=lambda x: x["score"], reverse=True)
+            # Re-sort by significance (SQL ordered by fan_in; significance order differs)
+            top_repeaters.sort(key=lambda x: x["significance"], reverse=True)
             top_repeaters = top_repeaters[:10]
             if top_repeaters:
                 top_repeaters[0]["_max_fan_in"] = max_fan_in
