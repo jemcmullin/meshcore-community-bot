@@ -86,44 +86,57 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
   </div>
 <script>
 async function refresh() {
-  const res = await fetch('/api/community/metrics');
-  const data = await res.json();
+  try {
+    const res = await fetch('/api/community/metrics');
+    if (!res.ok) {
+      const text = await res.text();
+      document.getElementById('meta').textContent = `Error ${res.status}: ${text.slice(0, 300)}`;
+      return;
+    }
+    const data = await res.json();
+    if (data.error) {
+      document.getElementById('meta').textContent = `API error: ${data.error}`;
+      return;
+    }
 
-  document.getElementById('meta').textContent = `Updated ${new Date(data.timestamp * 1000).toLocaleTimeString()} | DB: ${data.db_path}`;
-  document.getElementById('network').innerHTML = `
-    <div><b>Total known nodes:</b> ${data.network.total_nodes}</div>
-    <div><b>Last hour bid events:</b> ${data.coordination.event_count}</div>
-  `;
+    document.getElementById('meta').textContent = `Updated ${new Date(data.timestamp * 1000).toLocaleTimeString()} | DB: ${data.db_path}`;
+    document.getElementById('network').innerHTML = `
+      <div><b>Total known nodes:</b> ${data.network.total_nodes}</div>
+      <div><b>Last hour bid events:</b> ${data.coordination.event_count}</div>
+    `;
 
-  document.getElementById('coord').innerHTML = Object.entries(data.coordination.stage_counts)
-    .map(([k, v]) => `<span class=\"pill\">${k}: ${v}</span>`).join('') || '<span class=\"pill\">No events</span>';
+    document.getElementById('coord').innerHTML = Object.entries(data.coordination.stage_counts)
+      .map(([k, v]) => `<span class=\"pill\">${k}: ${v}</span>`).join('') || '<span class=\"pill\">No events</span>';
 
-  const reps = data.top_repeaters;
-  document.getElementById('repeaters').innerHTML = reps.map(r => `
-    <tr>
-      <td class="mono">${r.node}</td>
-      <td>${r.fan_in}</td>
-      <td>${r.obs}</td>
-      <td>${r.avg_depth}</td>
-      <td>${r.reach.toFixed(3)}</td>
-      <td>${r.depth_frac.toFixed(3)}</td>
-      <td>${r.score.toFixed(3)}</td>
-      <td>${r.coverage_pct.toFixed(0)}%</td>
-    </tr>
-  `).join('') || '<tr><td colspan="8">No repeater data</td></tr>';
-  if (reps.length && reps[0]._max_fan_in !== undefined) {
-    document.getElementById('repeaters-caption').textContent =
-      `max fan-in: ${reps[0]._max_fan_in} · max depth: ${reps[0]._max_depth} · score = reach × depth_frac`;
+    const reps = data.top_repeaters;
+    document.getElementById('repeaters').innerHTML = reps.map(r => `
+      <tr>
+        <td class="mono">${r.node}</td>
+        <td>${r.fan_in}</td>
+        <td>${r.obs}</td>
+        <td>${r.avg_depth}</td>
+        <td>${r.reach.toFixed(3)}</td>
+        <td>${r.depth_frac.toFixed(3)}</td>
+        <td>${r.score.toFixed(3)}</td>
+        <td>${r.coverage_pct.toFixed(0)}%</td>
+      </tr>
+    `).join('') || '<tr><td colspan="8">No repeater data</td></tr>';
+    if (reps.length && reps[0]._max_fan_in !== undefined) {
+      document.getElementById('repeaters-caption').textContent =
+        `max fan-in: ${reps[0]._max_fan_in} · max depth: ${reps[0]._max_depth} · score = reach × depth_frac`;
+    }
+
+    document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => `
+      <tr>
+        <td>${new Date(e.timestamp * 1000).toLocaleTimeString()}</td>
+        <td class=\"mono\">${e.stage}</td>
+        <td>${e.score === null ? 'n/a' : e.score.toFixed(3)}</td>
+        <td class=\"mono\">${e.summary}</td>
+      </tr>
+    `).join('') || '<tr><td colspan=\"4\">No recent coordination events</td></tr>';
+  } catch (err) {
+    document.getElementById('meta').textContent = `Load failed: ${err}`;
   }
-
-  document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => `
-    <tr>
-      <td>${new Date(e.timestamp * 1000).toLocaleTimeString()}</td>
-      <td class=\"mono\">${e.stage}</td>
-      <td>${e.score === null ? 'n/a' : e.score.toFixed(3)}</td>
-      <td class=\"mono\">${e.summary}</td>
-    </tr>
-  `).join('') || '<tr><td colspan=\"4\">No recent coordination events</td></tr>';
 }
 refresh();
 setInterval(refresh, 5000);
@@ -207,142 +220,151 @@ document.addEventListener('DOMContentLoaded', function () {
 
     @viewer.app.route("/api/community/metrics")
     def community_metrics():
-        now = time.time()
-        top_repeaters = []
-        stage_counts = {"bid": 0, "assigned_us": 0, "assigned_other": 0, "fallback": 0}
-        recent_events = []
-        event_count = 0
-        total_nodes = 0
-
-        conn = sqlite3.connect(viewer.db_path, timeout=60)
-        conn.row_factory = sqlite3.Row
         try:
-            cur = conn.cursor()
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            tables = {r["name"] for r in cur.fetchall()}
+            return _community_metrics_impl(viewer)
+        except Exception as exc:
+            import traceback
+            return jsonify({"error": str(exc), "trace": traceback.format_exc()}), 500
 
-            # Total distinct sender nodes observed in mesh connections
-            if "mesh_connections" in tables:
-                cur.execute("SELECT COUNT(DISTINCT from_prefix) AS total_nodes FROM mesh_connections")
-                row = cur.fetchone()
-                total_nodes = int((row["total_nodes"] if row else 0) or 0)
-            total_nodes = max(total_nodes, 1)
 
-            # Top repeaters: score = (log1p(fan_in) / log1p(max_fan_in)) × depth_fraction  [0, 1]
-            # fan_in         = distinct origin nodes routing through this relay
-            # max_fan_in     = highest fan_in in the network (normalises reach to 0-1)
-            # depth_fraction = (avg_hop_position - 1) / (max_depth - 1)
-            #                  0 for hop-1 feeders, 1 for deepest relay in network
-            # Scale: backbone ~0.65-1.0, distributor ~0.30-0.65, feeder ~0.
-            if "mesh_connections" in tables:
-                cur.execute(
-                    """
-                    SELECT to_prefix,
-                           COUNT(DISTINCT from_prefix) AS fan_in,
-                           SUM(observation_count) AS obs,
-                           AVG(COALESCE(avg_hop_position, 1)) AS avg_depth,
-                           (SELECT MAX(d)
-                            FROM (SELECT AVG(COALESCE(avg_hop_position, 1)) AS d
-                                  FROM mesh_connections
-                                  GROUP BY to_prefix)) AS max_depth,
-                           (SELECT MAX(COUNT(DISTINCT from_prefix))
-                            FROM mesh_connections
-                            GROUP BY to_prefix) AS max_fan_in
-                    FROM mesh_connections
-                    GROUP BY to_prefix
-                    ORDER BY fan_in DESC
-                    LIMIT 50
-                    """
+def _community_metrics_impl(viewer):
+    now = time.time()
+    top_repeaters = []
+    stage_counts = {"bid": 0, "assigned_us": 0, "assigned_other": 0, "fallback": 0}
+    recent_events = []
+    event_count = 0
+    total_nodes = 0
+
+    conn = sqlite3.connect(viewer.db_path, timeout=60)
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = {r["name"] for r in cur.fetchall()}
+
+        # Total distinct sender nodes observed in mesh connections
+        if "mesh_connections" in tables:
+            cur.execute("SELECT COUNT(DISTINCT from_prefix) AS total_nodes FROM mesh_connections")
+            row = cur.fetchone()
+            total_nodes = int((row["total_nodes"] if row else 0) or 0)
+        total_nodes = max(total_nodes, 1)
+
+        # Top repeaters: score = (log1p(fan_in) / log1p(max_fan_in)) × depth_fraction  [0, 1]
+        # fan_in         = distinct origin nodes routing through this relay
+        # max_fan_in     = highest fan_in in the network (normalises reach to 0-1)
+        # depth_fraction = (avg_hop_position - 1) / (max_depth - 1)
+        #                  0 for hop-1 feeders, 1 for deepest relay in network
+        # Scale: backbone ~0.65-1.0, distributor ~0.30-0.65, feeder ~0.
+        if "mesh_connections" in tables:
+            cur.execute(
+                """
+                SELECT to_prefix,
+                       COUNT(DISTINCT from_prefix) AS fan_in,
+                       SUM(observation_count) AS obs,
+                       AVG(COALESCE(avg_hop_position, 1)) AS avg_depth,
+                       (SELECT MAX(d)
+                        FROM (SELECT AVG(COALESCE(avg_hop_position, 1)) AS d
+                              FROM mesh_connections
+                              GROUP BY to_prefix)) AS max_depth,
+                       (SELECT MAX(c)
+                        FROM (SELECT COUNT(DISTINCT from_prefix) AS c
+                              FROM mesh_connections
+                              GROUP BY to_prefix)) AS max_fan_in
+                FROM mesh_connections
+                GROUP BY to_prefix
+                ORDER BY fan_in DESC
+                LIMIT 50
+                """
+            )
+            rows = cur.fetchall()
+            max_depth   = max(float(rows[0]["max_depth"] or 1.0), 1.0) if rows else 1.0
+            depth_range = max(max_depth - 1, 0.001)
+            max_fan_in  = max(int(rows[0]["max_fan_in"] or 1), 1) if rows else 1
+            log_max_fan = math.log1p(max_fan_in)
+            for r in rows:
+                fan_in     = int(r["fan_in"] or 0)
+                obs        = int(r["obs"] or 0)
+                avg_depth  = float(r["avg_depth"] or 1)
+                depth_frac = max(avg_depth - 1, 0) / depth_range
+                reach      = math.log1p(fan_in) / log_max_fan
+                score      = reach * depth_frac
+                top_repeaters.append(
+                    {
+                        "node": (r["to_prefix"] or "").upper(),
+                        "fan_in": fan_in,
+                        "obs": obs,
+                        "avg_depth": round(avg_depth, 2),
+                        "reach": round(reach, 3),
+                        "depth_frac": round(depth_frac, 3),
+                        "score": round(score, 3),
+                        "coverage_pct": (fan_in / total_nodes) * 100.0,
+                    }
                 )
-                rows = cur.fetchall()
-                max_depth   = max(float(rows[0]["max_depth"] or 1.0), 1.0) if rows else 1.0
-                depth_range = max(max_depth - 1, 0.001)
-                max_fan_in  = max(int(rows[0]["max_fan_in"] or 1), 1) if rows else 1
-                log_max_fan = math.log1p(max_fan_in)
-                for r in rows:
-                    fan_in    = int(r["fan_in"] or 0)
-                    obs       = int(r["obs"] or 0)
-                    avg_depth = float(r["avg_depth"] or 1)
-                    depth_frac = max(avg_depth - 1, 0) / depth_range
-                    score = (math.log1p(fan_in) / log_max_fan) * depth_frac
-                    reach = math.log1p(fan_in) / log_max_fan
-                    top_repeaters.append(
-                        {
-                            "node": (r["to_prefix"] or "").upper(),
-                            "fan_in": fan_in,
-                            "obs": obs,
-                            "avg_depth": round(avg_depth, 2),
-                            "reach": round(reach, 3),
-                            "depth_frac": round(depth_frac, 3),
-                            "score": score,
-                            "coverage_pct": (fan_in / total_nodes) * 100.0,
-                        }
-                    )
-                # Re-sort by score (SQL ordered by fan_in; score order differs)
-                top_repeaters.sort(key=lambda x: x["score"], reverse=True)
-                top_repeaters = top_repeaters[:10]
-                if top_repeaters:
-                    top_repeaters[0]["_max_fan_in"] = max_fan_in
-                    top_repeaters[0]["_max_depth"] = round(max_depth, 2)
+            # Re-sort by score (SQL ordered by fan_in; score order differs)
+            top_repeaters.sort(key=lambda x: x["score"], reverse=True)
+            top_repeaters = top_repeaters[:10]
+            if top_repeaters:
+                top_repeaters[0]["_max_fan_in"] = max_fan_in
+                top_repeaters[0]["_max_depth"] = round(max_depth, 2)
 
-            # Last 60 minutes of coordination snapshots injected by community layer
-            if "packet_stream" in tables:
-                cutoff = now - (60 * 60)
-                cur.execute(
-                    """
-                    SELECT timestamp, data
-                    FROM packet_stream
-                    WHERE type = 'command' AND timestamp >= ?
-                    ORDER BY timestamp DESC
-                    LIMIT 500
-                    """,
-                    (cutoff,),
+        # Last 60 minutes of coordination snapshots injected by community layer
+        if "packet_stream" in tables:
+            cutoff = now - (60 * 60)
+            cur.execute(
+                """
+                SELECT timestamp, data
+                FROM packet_stream
+                WHERE type = 'command' AND timestamp >= ?
+                ORDER BY timestamp DESC
+                LIMIT 500
+                """,
+                (cutoff,),
+            )
+            for r in cur.fetchall():
+                try:
+                    payload = json.loads(r["data"])
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+
+                cmd = (payload.get("command") or "").strip()
+                if not cmd.startswith("coord_"):
+                    continue
+
+                stage = cmd.replace("coord_", "", 1)
+                if stage not in stage_counts:
+                    stage_counts[stage] = 0
+                stage_counts[stage] += 1
+                event_count += 1
+
+                summary = payload.get("response") or ""
+                ev_score = _extract_score(summary)
+                recent_events.append(
+                    {
+                        "timestamp": float(r["timestamp"]),
+                        "stage": stage,
+                        "score": ev_score,
+                        "summary": summary,
+                    }
                 )
-                for r in cur.fetchall():
-                    try:
-                        payload = json.loads(r["data"])
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        continue
 
-                    cmd = (payload.get("command") or "").strip()
-                    if not cmd.startswith("coord_"):
-                        continue
+    finally:
+        conn.close()
 
-                    stage = cmd.replace("coord_", "", 1)
-                    if stage not in stage_counts:
-                        stage_counts[stage] = 0
-                    stage_counts[stage] += 1
-                    event_count += 1
-
-                    summary = payload.get("response") or ""
-                    score = _extract_score(summary)
-                    recent_events.append(
-                        {
-                            "timestamp": float(r["timestamp"]),
-                            "stage": stage,
-                            "score": score,
-                            "summary": summary,
-                        }
-                    )
-
-        finally:
-            conn.close()
-
-        return jsonify(
-            {
-                "timestamp": now,
-                "db_path": viewer.db_path,
-                "network": {
-                    "total_nodes": total_nodes,
-                },
-                "top_repeaters": top_repeaters,
-                "coordination": {
-                    "event_count": event_count,
-                    "stage_counts": stage_counts,
-                    "recent_events": recent_events[:50],
-                },
-            }
-        )
+    return jsonify(
+        {
+            "timestamp": now,
+            "db_path": viewer.db_path,
+            "network": {
+                "total_nodes": total_nodes,
+            },
+            "top_repeaters": top_repeaters,
+            "coordination": {
+                "event_count": event_count,
+                "stage_counts": stage_counts,
+                "recent_events": recent_events[:50],
+            },
+        }
+    )
 
 
 def main() -> None:

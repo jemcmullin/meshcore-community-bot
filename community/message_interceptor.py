@@ -315,9 +315,10 @@ class MessageInterceptor:
                                 FROM (SELECT AVG(COALESCE(avg_hop_position, 1)) AS d
                                       FROM mesh_connections
                                       GROUP BY to_prefix)) AS max_depth,
-                               (SELECT MAX(COUNT(DISTINCT from_prefix))
-                                FROM mesh_connections
-                                GROUP BY to_prefix) AS max_fan_in
+                               (SELECT MAX(c)
+                                FROM (SELECT COUNT(DISTINCT from_prefix) AS c
+                                      FROM mesh_connections
+                                      GROUP BY to_prefix)) AS max_fan_in
                         FROM mesh_connections
                         WHERE to_prefix IN ({placeholders})
                         GROUP BY to_prefix""",
