@@ -345,7 +345,7 @@ class MessageInterceptor:
                     """SELECT observation_count,
                               CAST((julianday('now') - julianday(last_seen)) * 24 AS REAL)
                        FROM observed_paths
-                       WHERE from_prefix = ? AND packet_type != 'ADVERT'
+                       WHERE from_prefix = ?
                        ORDER BY observation_count DESC LIMIT 1""",
                     (sender_prefix2,),
                     fetch=True,
@@ -353,7 +353,7 @@ class MessageInterceptor:
                 if rows:
                     obs_count, age_hours = rows[0]
                     path_reliability = min(1.0, (obs_count or 1) / 20.0)
-                    path_freshness   = math.exp(-(age_hours or 999) / 6.0)
+                    path_freshness   = math.exp(-(age_hours or 999) / 24.0)
             except Exception as e:
                 logger.debug(f"Could not fetch path reliability/freshness: {e}")
 
