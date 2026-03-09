@@ -79,6 +79,36 @@ class MessageInterceptor:
         if message.is_dm:
             result = await self._original_send_response(message, content, **kwargs)
             await self._report_message(message, bot_responded=result)
+
+            # --- DM metrics event for web viewer ---
+            try:
+                import json
+                import sqlite3
+                wvi = getattr(self.bot, "web_viewer_integration", None)
+                if wvi:
+                    db_path = wvi._get_web_viewer_db_path() if hasattr(wvi, "_get_web_viewer_db_path") else self.bot.db_manager.db_path
+                    command_id = f"dm_{message.sender_id or 'unknown'}"
+                    dm_event = {
+                        "command_id": command_id,
+                        "user": message.sender_id or "Unknown",
+                        "success": bool(result),
+                        "timestamp": int(message.timestamp or time.time()),
+                        "content": (message.content or "")[:100],
+                    }
+                    def _insert():
+                        conn = sqlite3.connect(str(db_path), timeout=60.0)
+                        try:
+                            cursor = conn.cursor()
+                            cursor.execute(
+                                "INSERT INTO packet_stream (timestamp, data, type) VALUES (?, ?, ?)",
+                                (float(dm_event["timestamp"]), json.dumps(dm_event), "command"),
+                            )
+                            conn.commit()
+                        finally:
+                            conn.close()
+                    await asyncio.to_thread(_insert)
+            except Exception as e:
+                logger.debug(f"Failed to log DM event for web viewer: {e}")
             return result
 
         # No coordinator configured — send immediately
