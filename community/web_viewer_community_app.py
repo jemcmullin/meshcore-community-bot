@@ -457,45 +457,48 @@ def _community_metrics_impl(viewer):
           if top_repeaters:
             top_repeaters[0]["_max_fan_in"] = max_fan_in
 
-        # Last 60 minutes of coordination snapshots injected by community layer
+        # Last 60 minutes of command events (bids, DMs, etc.)
         if "packet_stream" in tables:
-            cutoff = now - (60 * 60)
-            cur.execute(
-                """
-                SELECT timestamp, data
-                FROM packet_stream
-                WHERE type = 'command' AND timestamp >= ?
-                ORDER BY timestamp DESC
-                LIMIT 500
-                """,
-                (cutoff,),
+          cutoff = now - (60 * 60)
+          cur.execute(
+            """
+            SELECT timestamp, data
+            FROM packet_stream
+            WHERE type = 'command' AND timestamp >= ?
+            ORDER BY timestamp DESC
+            LIMIT 500
+            """,
+            (cutoff,),
+          )
+          for r in cur.fetchall():
+            try:
+              payload = json.loads(r["data"])
+            except (TypeError, ValueError, json.JSONDecodeError):
+              continue
+
+            cmd = (payload.get("command") or "").strip()
+            stage = None
+            if cmd.startswith("coord_"):
+              stage = cmd.replace("coord_", "", 1)
+              if stage not in stage_counts:
+                stage_counts[stage] = 0
+              stage_counts[stage] += 1
+              event_count += 1
+            else:
+              stage = cmd if cmd else "other"
+
+            summary = payload.get("response") or ""
+            ev_score = _extract_score(summary)
+            recent_events.append(
+              {
+                "timestamp": float(r["timestamp"]),
+                "stage": stage,
+                "score": ev_score,
+                "summary": summary,
+                "command_id": payload.get("command_id", ""),
+                "user": payload.get("user", ""),
+              }
             )
-            for r in cur.fetchall():
-                try:
-                    payload = json.loads(r["data"])
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    continue
-
-                cmd = (payload.get("command") or "").strip()
-                if not cmd.startswith("coord_"):
-                    continue
-
-                stage = cmd.replace("coord_", "", 1)
-                if stage not in stage_counts:
-                    stage_counts[stage] = 0
-                stage_counts[stage] += 1
-                event_count += 1
-
-                summary = payload.get("response") or ""
-                ev_score = _extract_score(summary)
-                recent_events.append(
-                    {
-                        "timestamp": float(r["timestamp"]),
-                        "stage": stage,
-                        "score": ev_score,
-                        "summary": summary,
-                    }
-                )
 
         # DM statistics (last 60 minutes) - track sent DMs and ACK delivery confirmation
         if "packet_stream" in tables:
