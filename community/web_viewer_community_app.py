@@ -142,7 +142,6 @@ async function refresh() {
       const oh = r.out_hops;
       const pathLabel = oh === null || oh === undefined
         ? '?' : oh === 0 ? 'direct' : `${oh} hop${oh > 1 ? 's' : ''}`;
-      const ah = r.age_hours;
       const lastSeen = ah === null || ah === undefined ? '?'
         : ah < 1 ? '<1h ago' : ah < 24 ? `${Math.floor(ah)}h ago` : `${Math.floor(ah/24)}d ago`;
       const tip = `infra=${r.infra.toFixed(2)} hop=${r.hop_score.toFixed(2)} path_bonus=${r.path_bonus.toFixed(2)} fresh=${r.freshness.toFixed(2)}`;
@@ -384,9 +383,9 @@ def _community_metrics_impl(viewer):
     finally:
         conn.close()
 
-      # Calculate average score for bid events
-      scores = [e["score"] for e in recent_events if e["score"] is not None and e["stage"] == "bid"]
-      avg_score = sum(scores) / len(scores) if scores else None
+    # Calculate average score for bid events
+    scores = [e["score"] for e in recent_events if e["score"] is not None and e["stage"] == "bid"]
+    avg_score = sum(scores) / len(scores) if scores else None
 
     return jsonify(
         {
