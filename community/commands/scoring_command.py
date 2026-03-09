@@ -27,15 +27,9 @@ class ScoringCommand(BaseCommand):
                        LIMIT 8"""
                 )
 
-                hop_stats = self.bot.db_manager.execute_query(
-                    """SELECT AVG(CASE WHEN out_path_len > 0 THEN out_path_len ELSE in_path_len END) AS avg_hops
-                       FROM complete_contact_tracking
-                       WHERE (julianday('now') - julianday(updated)) * 24 <= 48"""
-                )
+                return infra_rows
 
-                return infra_rows, hop_stats
-
-            infra_rows, hop_stats = await asyncio.to_thread(load_metrics)
+            infra_rows = await asyncio.to_thread(load_metrics)
 
             if not infra_rows:
                 await self.send_response(message, "No infrastructure data yet. Wait for mesh traffic.")
@@ -47,30 +41,22 @@ class ScoringCommand(BaseCommand):
                 node = (row.get("to_prefix") or "").upper().replace("!", "")[:4]
                 fan_in = int(row.get("fan_in") or 0)
                 age_hours = float(row.get("age_hours") or 999)
+                hops = row.get("hops")
                 if age_hours > 48:
                     stale_nodes += 1
-                top_nodes.append(f"{node}({fan_in})")
-
-            hop_row = hop_stats[0] if hop_stats else {}
-            avg_hops = float(hop_row.get("avg_hops") or 0)
+                top_nodes.append((node, fan_in, hops))
 
             # Keep output within radio-safe message length.
             max_len = self.get_max_message_length(message)
-            
-            lines = ["Top   Links"]
-            for node_str in top_nodes[:4]:
-                # node_str is like "A1B2(28)"
-                parts = node_str.split("(")
-                node = parts[0]
-                links = parts[1].rstrip(")")
-                lines.append(f"{node:<4}  {links}")
-            
-            footer = []
+
+            lines = [f"{'Node':<4} {'Links':>5} {'Hops':>5}"]
+            for node, links, hops in top_nodes[:4]:
+                hop_str = f"{hops}h" if hops is not None else "?h"
+                lines.append(f"{node:<4} {links:>5} {hop_str:>5}")
+
             if stale_nodes > 0:
-                footer.append(f"Stale: {stale_nodes}")
-            footer.append(f"AvgHop: {avg_hops:.1f}")
-            lines.append("  ".join(footer))
-            
+                lines.append(f"Stale: {stale_nodes}")
+
             text = "\n".join(lines)
             if len(text) > max_len:
                 text = text[: max_len - 3] + "..."

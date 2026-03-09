@@ -343,7 +343,7 @@ def _community_metrics_impl(viewer):
                 FROM mesh_connections mc
                 LEFT JOIN (
                   SELECT LOWER(SUBSTR(public_key, 1, 2)) AS pfx,
-                         MIN(out_path_len) AS out_hops
+                         MAX(hop_count) AS out_hops
                   FROM complete_contact_tracking
                   WHERE out_path_len IS NOT NULL
                   GROUP BY pfx
