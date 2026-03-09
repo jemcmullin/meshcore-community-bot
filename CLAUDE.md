@@ -151,7 +151,10 @@ docker compose logs -f
      c. Send hash + delivery_score to coordinator `POST /api/v1/coordination/should-respond` (300ms bidding window)
 2. If coordinator says yes → respond normally
 3. If coordinator says no → suppress (another bot handles it)
-4. If coordinator unreachable (>500ms) → `wait_before_responding_with_signal()` — delivery-score-aware delay so best-path bot wins the race
+4. If coordinator unreachable (>500ms) → fallback uses delivery-score-aware behavior:
+
+- suppress response when `delivery_score < fallback_min_delivery_score`
+- otherwise `wait_before_responding_with_signal()` so best-path bot wins the race
 
 **Key properties:**
 
@@ -159,6 +162,7 @@ docker compose logs -f
 - **Exact path bonus:** boolean 0/1 bonus from sender+path lookup
 - **Per-message scoring:** recomputed for every response bid
 - **Signal-aware fallback:** local delay uses same delivery formula (no blending with coordinator score)
+- **Fallback cutoff:** bots below `fallback_min_delivery_score` are silenced when coordinator is unreachable
 - Weights configurable via `scoring_observer_config.ini` or `SCORING_*` env vars
 
 ## Deployment

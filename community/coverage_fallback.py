@@ -28,6 +28,7 @@ class _DefaultConfig:
     degrade_after_seconds: int = DEGRADE_AFTER_SECONDS
     degrade_target: float = DEGRADE_TARGET
     degrade_window_seconds: int = 86400
+    fallback_min_delivery_score: float = 0.30
     infrastructure_weight: float = 0.40
     hop_weight: float = 0.35
     path_bonus_weight: float = 0.15

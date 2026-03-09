@@ -220,6 +220,29 @@ class MessageInterceptor:
 
         # Coordinator unreachable — delivery-score-aware fallback delay
         logger.info("Coordinator unreachable, using delivery-score-aware fallback")
+        min_fallback_score = (
+            scoring_cfg.fallback_min_delivery_score if scoring_cfg else 0.30
+        )
+        if delivery_score < min_fallback_score:
+            logger.info(
+                "Fallback suppressed [%s]: delivery_score=%.3f below threshold=%.3f",
+                content_prefix,
+                delivery_score,
+                min_fallback_score,
+            )
+            await self._publish_web_viewer_coordination_event(
+                message=message,
+                message_hash=message_hash,
+                stage="fallback_suppressed",
+                delivery_score=delivery_score,
+                inbound_hops=message.hops,
+                infrastructure=infrastructure,
+                path_bonus=path_bonus,
+                path_freshness=path_freshness,
+            )
+            await self._report_message(message, bot_responded=False, message_hash=message_hash)
+            return True  # command handled; intentionally silenced in fallback
+
         await self._publish_web_viewer_coordination_event(
             message=message,
             message_hash=message_hash,

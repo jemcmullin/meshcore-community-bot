@@ -99,6 +99,7 @@ In `MessageInterceptor._coordinated_send_response()`:
 In `CoverageFallback.compute_delay_ms_with_signal()`:
 
 - Compute per-message delivery score with the same formula/weights as coordinator bid.
+- If `delivery_score < fallback_min_delivery_score`, suppress response in fallback mode.
 - Convert delivery score directly to delay (`base_delay_ms`, `min_delay_ms`, `max_jitter_ms`).
 - No blending with coordinator coverage score — old coverage API will be removed.
 - Higher delivery score = shorter delay, so best-path bot responds first.
@@ -114,6 +115,7 @@ In `CoverageFallback.compute_delay_ms_with_signal()`:
 - `base_delay_ms`
 - `min_delay_ms`
 - `max_jitter_ms`
+- `fallback_min_delivery_score`
 - `degrade_after_seconds`
 - `degrade_target`
 - `degrade_window_seconds`
