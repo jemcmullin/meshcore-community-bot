@@ -120,7 +120,30 @@ In `CoverageFallback.compute_delay_ms_with_signal()`:
 - `degrade_target`
 - `degrade_window_seconds`
 
-## Notes
+## Future Improvement Option: Bidirectional Bonus Scoring
 
-- Coordinator payload still forwards `receiver_snr`, `receiver_rssi`, and `receiver_path` for API compatibility/logging; these are not part of local delivery score computation.
-- `path_bonus` is intentionally non-neutral when unknown (`0.0`), while infrastructure/freshness/hops can fall back to neutral behavior.
+**Overview:**
+Add a bidirectional bonus to the delivery scoring equation, rewarding bots whose path segments are confirmed bidirectional (i.e., both directions observed in mesh graph).
+
+**Proposed Equation:**
+delivery_score = base_score + 0.10 \* bidirectional_score
+Where `bidirectional_score` is the fraction of path segments with bidirectional edges (0 to 1).
+
+**Rationale:**
+
+- Bots with strong two-way connectivity are more likely to deliver messages reliably.
+- The bonus differentiates candidates with robust mesh links, favoring those most likely to succeed.
+
+**Scenario Example:**
+
+- Bot A: All path segments bidirectional → bonus = 0.10
+- Bot B: Half bidirectional → bonus = 0.05
+- Result: Bot A wins the bid, improving delivery reliability.
+
+**Implementation Notes:**
+
+- Bonus is additive; does not disrupt existing scoring structure.
+- Can be tuned or blended as a weighted term if desired.
+
+**Status:**
+Not yet implemented; recommended as a future enhancement for networks with asymmetric or lossy links.

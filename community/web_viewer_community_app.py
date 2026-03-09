@@ -76,6 +76,7 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
         <table>
           <thead><tr>
             <th>Top</th>
+            <th>Name</th>
             <th title="Active &lt;24h · Recent 24–48h · Stale &gt;48h">Status</th>
             <th title="Stored outbound hops from this bot to relay">Hops</th>
             <th title="Unique source nodes routing through this relay">Links</th>
@@ -184,9 +185,11 @@ async function refresh() {
       const lastSeen = ah === null || ah === undefined ? '?'
         : ah < 1 ? '<1h ago' : ah < 24 ? `${Math.floor(ah)}h ago` : `${Math.floor(ah/24)}d ago`;
       const tip = `infra=${r.infra.toFixed(2)} hop=${r.hop_score.toFixed(2)} path_bonus=${r.path_bonus.toFixed(2)} fresh=${r.freshness.toFixed(2)}`;
+      const name = r.name ? r.name : '';
       return `
       <tr title="${tip}">
         <td class="mono">${r.node}</td>
+        <td>${name}</td>
         <td style="color:${statusColor};font-weight:bold">${statusLabel}</td>
         <td>${pathLabel}</td>
         <td>${r.fan_in}</td>
@@ -194,7 +197,7 @@ async function refresh() {
         <td>${lastSeen}</td>
         <td>${r.significance.toFixed(2)}</td>
       </tr>`;
-    }).join('') || '<tr><td colspan="7">No repeater data</td></tr>';
+    }).join('') || '<tr><td colspan="8">No repeater data</td></tr>';
     document.getElementById('repeaters-caption').textContent =
       'Status: Active <24h · Recent 24–48h · Stale >48h  ·  Score: hover row for component breakdown';
 
@@ -330,60 +333,65 @@ def _community_metrics_impl(viewer):
         # Estimated bid score with path-familiarity weights.
         # Path bonus is message-specific, so repeater rows use 0.0.
         if "mesh_connections" in tables:
-            cur.execute(
-                """
-                SELECT mc.to_prefix,
-                       COUNT(DISTINCT mc.from_prefix) AS fan_in,
-                       CAST((julianday('now') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
-                       (SELECT MAX(c)
-                        FROM (SELECT COUNT(DISTINCT from_prefix) AS c
-                              FROM mesh_connections
-                              GROUP BY to_prefix)) AS max_fan_in,
-                       cct.out_hops
-                FROM mesh_connections mc
-                LEFT JOIN (
-                  SELECT LOWER(SUBSTR(public_key, 1, 2)) AS pfx,
-                         MAX(hop_count) AS out_hops
-                  FROM complete_contact_tracking
-                  WHERE out_path_len IS NOT NULL
-                  GROUP BY pfx
-                ) AS cct ON cct.pfx = mc.to_prefix
-                GROUP BY mc.to_prefix
-                ORDER BY fan_in DESC
-                LIMIT 50
-                """
+          cur.execute(
+            """
+            SELECT mc.to_prefix,
+                 COUNT(DISTINCT mc.from_prefix) AS fan_in,
+                 CAST((julianday('now') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
+                 (SELECT MAX(c)
+                FROM (SELECT COUNT(DISTINCT from_prefix) AS c
+                    FROM mesh_connections
+                    GROUP BY to_prefix)) AS max_fan_in,
+                 cct.out_hops,
+                 rn.name
+            FROM mesh_connections mc
+            LEFT JOIN (
+              SELECT LOWER(SUBSTR(public_key, 1, 2)) AS pfx,
+                 MAX(hop_count) AS out_hops
+              FROM complete_contact_tracking
+              WHERE out_path_len IS NOT NULL
+              GROUP BY pfx
+            ) AS cct ON cct.pfx = mc.to_prefix
+            LEFT JOIN (
+              SELECT prefix, name FROM repeater_names
+            ) AS rn ON rn.prefix = mc.to_prefix
+            GROUP BY mc.to_prefix
+            ORDER BY fan_in DESC
+            LIMIT 50
+            """
+          )
+          rows = cur.fetchall()
+          max_fan_in     = max(int(rows[0]["max_fan_in"] or 1), 1) if rows else 1
+          log_max_fan    = math.log1p(max_fan_in)
+          for r in rows:
+            fan_in      = int(r["fan_in"] or 0)
+            out_hops    = r["out_hops"]
+            age_hours   = float(r["age_hours"] or 999)
+            infra       = math.log1p(fan_in) / log_max_fan
+            hop_score   = 0.5
+            path_bonus  = 0.0
+            freshness   = math.exp(-age_hours / 24.0)
+            significance = infra * 0.40 + hop_score * 0.35 + path_bonus * 0.15 + freshness * 0.10
+            top_repeaters.append(
+              {
+                "node": (r["to_prefix"] or "").upper().replace("!", "")[:4],
+                "name": r["name"] if "name" in r.keys() else None,
+                "fan_in": fan_in,
+                "age_hours": round(age_hours, 1),
+                "out_hops": int(out_hops) if out_hops is not None else None,
+                "hop_score": round(hop_score, 3),
+                "infra": round(infra, 3),
+                "path_bonus": round(path_bonus, 3),
+                "freshness": round(freshness, 3),
+                "significance": round(significance, 3),
+                "coverage_pct": (fan_in / total_nodes) * 100.0,
+              }
             )
-            rows = cur.fetchall()
-            max_fan_in     = max(int(rows[0]["max_fan_in"] or 1), 1) if rows else 1
-            log_max_fan    = math.log1p(max_fan_in)
-            for r in rows:
-                fan_in      = int(r["fan_in"] or 0)
-                out_hops    = r["out_hops"]
-                age_hours   = float(r["age_hours"] or 999)
-                infra       = math.log1p(fan_in) / log_max_fan
-                hop_score   = 0.5
-                path_bonus  = 0.0
-                freshness   = math.exp(-age_hours / 24.0)
-                significance = infra * 0.40 + hop_score * 0.35 + path_bonus * 0.15 + freshness * 0.10
-                top_repeaters.append(
-                    {
-                        "node": (r["to_prefix"] or "").upper().replace("!", "")[:4],
-                        "fan_in": fan_in,
-                        "age_hours": round(age_hours, 1),
-                        "out_hops": int(out_hops) if out_hops is not None else None,
-                        "hop_score": round(hop_score, 3),
-                        "infra": round(infra, 3),
-                        "path_bonus": round(path_bonus, 3),
-                        "freshness": round(freshness, 3),
-                        "significance": round(significance, 3),
-                        "coverage_pct": (fan_in / total_nodes) * 100.0,
-                    }
-                )
-            # Re-sort by significance (SQL ordered by fan_in; significance order differs)
-            top_repeaters.sort(key=lambda x: x["significance"], reverse=True)
-            top_repeaters = top_repeaters[:10]
-            if top_repeaters:
-                top_repeaters[0]["_max_fan_in"] = max_fan_in
+          # Re-sort by significance (SQL ordered by fan_in; significance order differs)
+          top_repeaters.sort(key=lambda x: x["significance"], reverse=True)
+          top_repeaters = top_repeaters[:10]
+          if top_repeaters:
+            top_repeaters[0]["_max_fan_in"] = max_fan_in
 
         # Last 60 minutes of coordination snapshots injected by community layer
         if "packet_stream" in tables:
