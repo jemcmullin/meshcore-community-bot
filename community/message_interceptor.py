@@ -386,6 +386,16 @@ class MessageInterceptor:
             was_command = bool(content_prefix)
             command_name = content_prefix if was_command else None
 
+            # Store message data locally in packet_stream for web viewer
+            await self._store_message_for_viewer(
+                message=message,
+                message_hash=message_hash,
+                timestamp=timestamp,
+                was_command=was_command,
+                command_name=command_name,
+                bot_responded=bot_responded,
+            )
+
             await self.reporter.add_message(
                 message_hash=message_hash,
                 sender_pubkey=message.sender_pubkey or "",
@@ -443,6 +453,63 @@ class MessageInterceptor:
             )
         except Exception as e:
             logger.debug(f"Failed to publish coordination event to web viewer: {e}")
+
+    async def _store_message_for_viewer(
+        self,
+        message,
+        message_hash: str,
+        timestamp: int,
+        was_command: bool,
+        command_name: Optional[str],
+        bot_responded: bool,
+    ) -> None:
+        """Store message data in packet_stream table for web viewer analytics.
+
+        Creates a 'message' type entry similar to how coordination events are stored as 'command' type.
+        """
+        wvi = getattr(self.bot, "web_viewer_integration", None)
+        if not wvi:
+            return
+
+        try:
+            import json
+            import sqlite3
+
+            message_data = {
+                "message_hash": message_hash,
+                "sender_name": message.sender_id or "",
+                "sender_pubkey": message.sender_pubkey or "",
+                "channel": message.channel,
+                "content": (message.content or "")[:100],  # Truncate for privacy/space
+                "is_dm": message.is_dm,
+                "hops": message.hops,
+                "path": message.path,
+                "snr": message.snr,
+                "rssi": message.rssi,
+                "timestamp": timestamp,
+                "was_command": was_command,
+                "command_name": command_name,
+                "bot_responded": bot_responded,
+            }
+
+            # Insert into packet_stream via helper method
+            db_path = wvi._get_web_viewer_db_path() if hasattr(wvi, "_get_web_viewer_db_path") else self.bot.db_manager.db_path
+            
+            def _insert():
+                conn = sqlite3.connect(str(db_path), timeout=60.0)
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT INTO packet_stream (timestamp, data, type) VALUES (?, ?, ?)",
+                        (float(timestamp), json.dumps(message_data), "message"),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            
+            await asyncio.to_thread(_insert)
+        except Exception as e:
+            logger.debug(f"Failed to store message for web viewer: {e}")
 
     # ------------------------------------------------------------------
     # Cleanup

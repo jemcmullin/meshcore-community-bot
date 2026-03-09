@@ -67,6 +67,10 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
         <h3>Bot Performance (Last 60m)</h3>
         <div id=\"coord\"></div>
       </section>
+      <section class=\"card\">
+        <h3>Direct Messages (Last 60m)</h3>
+        <div id=\"dm-stats\"></div>
+      </section>
       <section class=\"card\" style=\"grid-column: 1/-1;\">
         <h3>Top Repeaters</h3>
         <table>
@@ -132,6 +136,41 @@ async function refresh() {
         <div><b>Avg score:</b> ${avgScore}</div>
         <div><b>Fallback:</b> ${fallback} (${fallbackRate}%)</div>
       `;
+    }
+
+    // DM Statistics
+    const dm = data.dm_stats || {};
+    const totalDMs = dm.total_dms || 0;
+    const dmsDelivered = dm.dms_with_response || 0;
+    const deliveryRate = totalDMs > 0 ? ((dmsDelivered / totalDMs) * 100).toFixed(0) : 0;
+    
+    if (totalDMs === 0) {
+      document.getElementById('dm-stats').innerHTML = '<div style=\"color:var(--muted)\">No DMs sent in last hour</div>';
+    } else {
+      let dmHtml = `
+        <div><b>DMs sent:</b> ${totalDMs}</div>
+        <div><b>Delivery confirmed:</b> ${dmsDelivered} (${deliveryRate}%)</div>
+      `;
+      
+      // Show top 3 users with best delivery rate
+      if (dm.top_users && dm.top_users.length > 0) {
+        dmHtml += '<div style=\"margin-top:8px;font-size:12px;color:var(--muted)\"><b>Top delivery:</b></div>';
+        dm.top_users.forEach(u => {
+          const statusColor = u.rate >= 80 ? '#2d8a4e' : u.rate >= 50 ? '#b07d1a' : '#888';
+          dmHtml += `<div style=\"font-size:11px\"><span style=\"color:${statusColor};font-weight:bold\">${u.rate}%</span> ${u.user} (${u.delivered}/${u.sent})</div>`;
+        });
+      }
+      
+      // Show bottom 3 users with worst delivery rate
+      if (dm.bottom_users && dm.bottom_users.length > 0) {
+        dmHtml += '<div style=\"margin-top:6px;font-size:12px;color:var(--muted)\"><b>Needs attention:</b></div>';
+        dm.bottom_users.forEach(u => {
+          const statusColor = u.rate >= 80 ? '#2d8a4e' : u.rate >= 50 ? '#b07d1a' : '#c44';
+          dmHtml += `<div style=\"font-size:11px\"><span style=\"color:${statusColor};font-weight:bold\">${u.rate}%</span> ${u.user} (${u.delivered}/${u.sent})</div>`;
+        });
+      }
+      
+      document.getElementById('dm-stats').innerHTML = dmHtml;
     }
 
     const reps = data.top_repeaters;
@@ -267,6 +306,12 @@ def _community_metrics_impl(viewer):
     recent_events = []
     event_count = 0
     total_nodes = 0
+    dm_stats = {
+        "total_dms": 0,
+        "dms_with_response": 0,
+        "top_users": [],
+        "bottom_users": []
+    }
 
     conn = sqlite3.connect(viewer.db_path, timeout=60)
     conn.row_factory = sqlite3.Row
@@ -380,6 +425,71 @@ def _community_metrics_impl(viewer):
                     }
                 )
 
+        # DM statistics (last 60 minutes) - track sent DMs and ACK delivery confirmation
+        if "packet_stream" in tables:
+            cutoff = now - (60 * 60)
+            
+            # Query 'command' entries for DM transmissions with ACK tracking
+            cur.execute(
+                """
+                SELECT timestamp, data
+                FROM packet_stream
+                WHERE type = 'command' AND timestamp >= ?
+                ORDER BY timestamp DESC
+                LIMIT 1000
+                """,
+                (cutoff,),
+            )
+            
+            user_stats = {}  # Track per-user DM stats
+            
+            for r in cur.fetchall():
+                try:
+                    payload = json.loads(r["data"])
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+
+                # Look for DM commands with command_id pattern "dm_*"
+                command_id = payload.get("command_id", "")
+                if not command_id or not command_id.startswith("dm_"):
+                    continue
+                
+                # Extract recipient from command_id or user field
+                recipient = payload.get("user", "Unknown")
+                
+                # This is a DM transmission
+                dm_stats["total_dms"] += 1
+                
+                # Track per-user stats
+                if recipient not in user_stats:
+                    user_stats[recipient] = {"sent": 0, "delivered": 0}
+                user_stats[recipient]["sent"] += 1
+                
+                # Check if ACK was received ('success' field indicates ACK received)
+                success = payload.get("success", False)
+                if success:
+                    dm_stats["dms_with_response"] += 1
+                    user_stats[recipient]["delivered"] += 1
+            
+            # Calculate success rates and get top/bottom users
+            user_rates = []
+            for user, stats in user_stats.items():
+                if stats["sent"] >= 2:  # Only include users with at least 2 DMs
+                    rate = (stats["delivered"] / stats["sent"]) * 100
+                    user_rates.append({
+                        "user": user,
+                        "sent": stats["sent"],
+                        "delivered": stats["delivered"],
+                        "rate": round(rate, 0)
+                    })
+            
+            # Sort by rate (descending)
+            user_rates.sort(key=lambda x: x["rate"], reverse=True)
+            
+            # Get top 3 and bottom 3
+            dm_stats["top_users"] = user_rates[:3] if len(user_rates) >= 3 else user_rates
+            dm_stats["bottom_users"] = user_rates[-3:][::-1] if len(user_rates) >= 3 else []
+
     finally:
         conn.close()
 
@@ -401,6 +511,7 @@ def _community_metrics_impl(viewer):
                 "avg_score": avg_score,
                 "recent_events": recent_events[:50],
             },
+            "dm_stats": dm_stats,
         }
     )
 
