@@ -25,6 +25,45 @@ if str(SUBMODULE_PATH) not in sys.path:
 
 from modules.web_viewer.app import BotDataViewer  # noqa: E402
 
+# --- Monkey-patch BotDataViewer to ensure capture_command logs coordination events ---
+import sqlite3
+import json
+def _community_capture_command(self, message, command, response, success, command_id):
+  try:
+    db_path = getattr(self, 'db_path', None)
+    if not db_path:
+      return
+    # Build payload for both coordination and DM events
+    payload = {
+      "command": command,
+      "response": response,
+      "success": success,
+      "command_id": command_id,
+      "user": getattr(message, 'sender_id', None),
+      "timestamp": getattr(message, 'timestamp', None),
+    }
+    # For DM commands, add extra fields if available
+    if command_id and str(command_id).startswith("dm_"):
+      payload["dm_content"] = getattr(message, 'content', None)
+      payload["dm_channel"] = getattr(message, 'channel', None)
+      payload["dm_is_dm"] = getattr(message, 'is_dm', None)
+      payload["dm_hops"] = getattr(message, 'hops', None)
+      payload["dm_path"] = getattr(message, 'path', None)
+    conn = sqlite3.connect(db_path, timeout=60)
+    try:
+      cur = conn.cursor()
+      cur.execute(
+        "INSERT INTO packet_stream (timestamp, data, type) VALUES (?, ?, ?)",
+        (float(payload["timestamp"] or time.time()), json.dumps(payload), "command")
+      )
+      conn.commit()
+    finally:
+      conn.close()
+  except Exception as exc:
+    pass  # Do not break bot operation if logging fails
+
+BotDataViewer.capture_command = _community_capture_command
+
 
 COMMUNITY_PAGE_HTML = """<!doctype html>
 <html lang=\"en\">
@@ -182,8 +221,13 @@ async function refresh() {
       const oh = r.out_hops;
       const pathLabel = oh === null || oh === undefined
         ? '?' : oh === 0 ? 'direct' : `${oh} hop${oh > 1 ? 's' : ''}`;
-      const lastSeen = ah === null || ah === undefined ? '?'
-        : ah < 1 ? '<1h ago' : ah < 24 ? `${Math.floor(ah)}h ago` : `${Math.floor(ah/24)}d ago`;
+      let lastSeen = '?';
+      if (r.last_seen_ts !== null && r.last_seen_ts !== undefined) {
+        const dt = new Date(r.last_seen_ts * 1000);
+        lastSeen = dt.toLocaleString();
+      } else if (ah !== null && ah !== undefined) {
+        lastSeen = ah < 1 ? '<1h ago' : ah < 24 ? `${Math.floor(ah)}h ago` : `${Math.floor(ah/24)}d ago`;
+      }
       const tip = `infra=${r.infra.toFixed(2)} hop=${r.hop_score.toFixed(2)} path_bonus=${r.path_bonus.toFixed(2)} fresh=${r.freshness.toFixed(2)}`;
       const name = r.name ? r.name : '';
       return `
@@ -375,6 +419,22 @@ def _community_metrics_impl(viewer):
             path_bonus  = 0.0
             freshness   = math.exp(-age_hours / 24.0)
             significance = infra * 0.40 + hop_score * 0.35 + path_bonus * 0.15 + freshness * 0.10
+            # Calculate last_seen_ts (UNIX timestamp) for each repeater
+            cur2 = conn.cursor()
+            cur2.execute(
+                "SELECT MAX(last_seen) AS last_seen FROM mesh_connections WHERE to_prefix = ?",
+                (r["to_prefix"],)
+            )
+            last_seen_row = cur2.fetchone()
+            last_seen_str = last_seen_row["last_seen"] if last_seen_row and last_seen_row["last_seen"] else None
+            last_seen_ts = None
+            if last_seen_str:
+                try:
+                    import datetime
+                    dt = datetime.datetime.fromisoformat(last_seen_str)
+                    last_seen_ts = dt.timestamp()
+                except Exception:
+                    last_seen_ts = None
             top_repeaters.append(
               {
                 "node": (r["to_prefix"] or "").upper().replace("!", "")[:4],
@@ -388,6 +448,7 @@ def _community_metrics_impl(viewer):
                 "freshness": round(freshness, 3),
                 "significance": round(significance, 3),
                 "coverage_pct": (fan_in / total_nodes) * 100.0,
+                "last_seen_ts": last_seen_ts,
               }
             )
           # Re-sort by significance (SQL ordered by fan_in; significance order differs)
