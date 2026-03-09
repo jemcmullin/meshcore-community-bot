@@ -58,10 +58,10 @@ class CommunityBot(MeshCoreBot):
         # Load scoring config
         self.scoring_config = ScoringConfig.from_env_and_config(self.config)
         self.logger.info(
-            "Scoring weights loaded: hops=%.2f infra=%.2f reliability=%.2f freshness=%.2f",
+            "Scoring weights loaded: infra=%.2f hops=%.2f path_bonus=%.2f freshness=%.2f",
+            self.scoring_config.infrastructure_weight,
             self.scoring_config.hop_weight,
-            self.scoring_config.infra_weight,
-            self.scoring_config.reliability_weight,
+            self.scoring_config.path_bonus_weight,
             self.scoring_config.freshness_weight,
         )
 

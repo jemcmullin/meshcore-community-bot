@@ -199,19 +199,18 @@ class CoordinatorClient:
         receiver_rssi: Optional[int] = None,
         receiver_path: Optional[str] = None,
         # --- new delivery-score inputs ---
-        outbound_hops: Optional[int] = None,
         infrastructure: Optional[float] = None,
-        path_reliability: Optional[float] = None,
+        path_bonus: Optional[float] = None,
         path_freshness: Optional[float] = None,
-        w_hops: float = 0.50,
-        w_infra: float = 0.25,
-        w_reliability: float = 0.15,
+        w_infrastructure: float = 0.40,
+        w_hops: float = 0.35,
+        w_path_bonus: float = 0.15,
         w_freshness: float = 0.10,
     ) -> Optional[bool]:
         """Ask coordinator if this bot should respond to a message.
 
-        Computes a delivery_score ∈ [0, 1] from hop count, infrastructure
-        quality, path reliability and freshness, then submits it to the
+        Computes a delivery_score ∈ [0, 1] from infrastructure, live hops,
+        exact path familiarity and freshness, then submits it to the
         coordinator's bidding window. The bot with the highest score responds.
 
         Returns:
@@ -240,25 +239,23 @@ class CoordinatorClient:
 
         # Pre-computed delivery score is the sole bidding field
         payload["delivery_score"] = self.compute_delivery_score(
-            inbound_hops=receiver_hops,
-            outbound_hops=outbound_hops,
             infrastructure=infrastructure,
-            path_reliability=path_reliability,
+            inbound_hops=receiver_hops,
+            path_bonus=path_bonus,
             path_freshness=path_freshness,
+            w_infrastructure=w_infrastructure,
             w_hops=w_hops,
-            w_infra=w_infra,
-            w_reliability=w_reliability,
+            w_path_bonus=w_path_bonus,
             w_freshness=w_freshness,
         )
         logger.info(
-            "Submit bid hash=%s channel=%s score=%.3f in_hops=%s out_hops=%s infra=%s reliability=%s freshness=%s",
+            "Submit bid hash=%s channel=%s score=%.3f in_hops=%s infra=%s path_bonus=%s freshness=%s",
             message_hash[:12],
             channel or "",
             payload["delivery_score"],
             receiver_hops,
-            outbound_hops,
             None if infrastructure is None else round(infrastructure, 3),
-            None if path_reliability is None else round(path_reliability, 3),
+            None if path_bonus is None else round(path_bonus, 3),
             None if path_freshness is None else round(path_freshness, 3),
         )
 
@@ -333,39 +330,41 @@ class CoordinatorClient:
         path_string = re.sub(r"\s*\(.*?\)\s*$", "", path_string).strip()
         if not path_string:
             return []
-        return [n.strip().upper() for n in path_string.split(",") if n.strip()]
+        if "," in path_string:
+            return [n.strip().upper() for n in path_string.split(",") if n.strip()]
+
+        compact = re.sub(r"[^0-9a-fA-F]", "", path_string)
+        if len(compact) >= 2 and len(compact) % 2 == 0:
+            return [compact[i:i + 2].upper() for i in range(0, len(compact), 2)]
+        return []
 
     @staticmethod
     def compute_delivery_score(
-        inbound_hops: Optional[int],
-        outbound_hops: Optional[int],
         infrastructure: Optional[float],
-        path_reliability: Optional[float],
+        inbound_hops: Optional[int],
+        path_bonus: Optional[float],
         path_freshness: Optional[float],
+        w_infrastructure: float = 0.40,
         w_hops: float = 0.35,
-        w_infra: float = 0.30,
-        w_reliability: float = 0.20,
-        w_freshness: float = 0.15,
+        w_path_bonus: float = 0.15,
+        w_freshness: float = 0.10,
     ) -> float:
         """Compute a delivery score ∈ [0, 1] for coordinator bidding.
 
-        Higher score = this bot has a better chance of reaching the sender.
-        Unknown components default to 0.5 (neutral) — missing data neither helps nor hurts.
-
-        Components:
-          hop_score        = max(0, 1 - best_hops * 0.35)  [0 hops=1.0, 3 hops=0.0]
-          infrastructure   = log1p(fan_in) / log1p(total_nodes)
-          path_reliability = min(1, obs_count / 20)
-          path_freshness   = exp(-age_hours / 6)
+        Unknown infrastructure/freshness default to 0.5 (neutral).
+        Path bonus defaults to 0.0 when unknown.
         """
-        hops = [h for h in (inbound_hops, outbound_hops) if h is not None]
-        hop_score = max(0.0, 1.0 - min(hops) * 0.35) if hops else 0.5
+        hop_score = 1.0 / (1.0 + inbound_hops) if inbound_hops is not None else 0.5
+        infra = infrastructure if infrastructure is not None else 0.5
+        bonus = path_bonus if path_bonus is not None else 0.0
+        fresh = path_freshness if path_freshness is not None else 0.5
 
-        infra = infrastructure   if infrastructure   is not None else 0.5
-        rel   = path_reliability if path_reliability is not None else 0.5
-        fresh = path_freshness   if path_freshness   is not None else 0.5
-
-        return hop_score * w_hops + infra * w_infra + rel * w_reliability + fresh * w_freshness
+        return (
+            infra * w_infrastructure
+            + hop_score * w_hops
+            + bonus * w_path_bonus
+            + fresh * w_freshness
+        )
 
     @staticmethod
     def compute_message_hash(

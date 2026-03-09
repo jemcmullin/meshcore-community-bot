@@ -1,84 +1,83 @@
-"""Coverage command — which mesh nodes this bot hears, and how reliably.
-
-Buckets:
-  Close  — confirmed outbound path (0 or 1 hop), seen within ~34h
-  Active — no confirmed path yet, but seen recently
-  Stale  — not seen in ~34h+ (freshness < 0.25, i.e. exp(-age_h/24) < 0.25)
-
-Answers: "where is this bot useful, and is anything broken?"
-"""
+"""Owner-facing scoring snapshot."""
 
 import asyncio
-import math
-
 from modules.commands.base_command import BaseCommand
 from modules.models import MeshMessage
 
 
 class ScoringCommand(BaseCommand):
-    """Bot coverage overview: close/active/stale node buckets."""
+    """Bid-score diagnostics for bot owners."""
 
     name = "scoring"
     keywords = ["score", "scoring", "repeaters"]
-    description = "Bot coverage overview: which nodes are close, active, or stale"
+    description = "Shows top infra relays and simple bid-health metrics"
     requires_dm = True
     category = "community"
 
     async def execute(self, message: MeshMessage) -> bool:
         try:
-            def get_repeaters():
-                return self.bot.db_manager.execute_query(
+            def load_metrics():
+                infra_rows = self.bot.db_manager.execute_query(
                     """SELECT mc.to_prefix,
                               COUNT(DISTINCT mc.from_prefix) AS fan_in,
-                              CAST((julianday('now') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
-                              (SELECT COUNT(DISTINCT from_prefix)
-                               FROM mesh_connections) AS total_nodes,
-                              cct.out_hops
+                              CAST((julianday('now') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours
                        FROM mesh_connections mc
-                       LEFT JOIN (
-                         SELECT LOWER(SUBSTR(public_key, 1, 2)) AS pfx,
-                                MIN(out_path_len) AS out_hops
-                         FROM complete_contact_tracking
-                         WHERE out_path_len IS NOT NULL
-                         GROUP BY pfx
-                       ) AS cct ON cct.pfx = mc.to_prefix
                        GROUP BY mc.to_prefix
                        ORDER BY fan_in DESC
-                       LIMIT 30"""
+                       LIMIT 8"""
                 )
 
-            rows = await asyncio.to_thread(get_repeaters)
-            if not rows:
-                await self.send_response(message, "No repeater data available yet")
+                hop_stats = self.bot.db_manager.execute_query(
+                    """SELECT AVG(CASE WHEN out_path_len > 0 THEN out_path_len ELSE in_path_len END) AS avg_hops
+                       FROM complete_contact_tracking
+                       WHERE (julianday('now') - julianday(updated)) * 24 <= 48"""
+                )
+
+                return infra_rows, hop_stats
+
+            infra_rows, hop_stats = await asyncio.to_thread(load_metrics)
+
+            if not infra_rows:
+                await self.send_response(message, "No infrastructure data yet. Wait for mesh traffic.")
                 return True
 
-            total_nodes = max(rows[0].get('total_nodes') or 1, 1)
+            top_nodes = []
+            stale_nodes = 0
+            for row in infra_rows:
+                node = (row.get("to_prefix") or "").upper().replace("!", "")[:4]
+                fan_in = int(row.get("fan_in") or 0)
+                age_hours = float(row.get("age_hours") or 999)
+                if age_hours > 48:
+                    stale_nodes += 1
+                top_nodes.append(f"{node}({fan_in})")
 
-            close, active, stale = [], [], []
-            for row in rows:
-                node_id   = (row['to_prefix'] or '').upper()
-                age_hours = float(row.get('age_hours') or 999)
-                out_hops  = row.get('out_hops')
-                freshness = math.exp(-age_hours / 24.0)
+            hop_row = hop_stats[0] if hop_stats else {}
+            avg_hops = float(hop_row.get("avg_hops") or 0)
 
-                if freshness < 0.25:           # not seen in ~34h+
-                    stale.append(node_id)
-                elif out_hops is not None:     # confirmed path, fresh
-                    close.append(f"{node_id}({out_hops})")
-                else:                          # active but path unconfirmed
-                    active.append(node_id)
+            # Keep output within radio-safe message length.
+            max_len = self.get_max_message_length(message)
+            
+            lines = ["Top   Links"]
+            for node_str in top_nodes[:4]:
+                # node_str is like "A1B2(28)"
+                parts = node_str.split("(")
+                node = parts[0]
+                links = parts[1].rstrip(")")
+                lines.append(f"{node:<4}  {links}")
+            
+            footer = []
+            if stale_nodes > 0:
+                footer.append(f"Stale: {stale_nodes}")
+            footer.append(f"AvgHop: {avg_hops:.1f}")
+            lines.append("  ".join(footer))
+            
+            text = "\n".join(lines)
+            if len(text) > max_len:
+                text = text[: max_len - 3] + "..."
 
-            lines = [f"{total_nodes}n nodes"]
-            if close:
-                lines.append(f"Close({len(close)}): {' '.join(close)}")
-            if active:
-                lines.append(f"Active({len(active)}): {' '.join(active)}")
-            if stale:
-                lines.append(f"Stale({len(stale)}): {' '.join(stale)}")
-
-            await self.send_response(message, "\n".join(lines))
+            await self.send_response(message, text)
             return True
         except Exception as e:
             self.logger.error(f"Scoring command error: {e}")
-            await self.send_response(message, "Error getting coverage data")
+            await self.send_response(message, "Error getting scoring diagnostics")
             return False

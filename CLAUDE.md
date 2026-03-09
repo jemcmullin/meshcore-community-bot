@@ -33,10 +33,12 @@ MeshCore Community Bot - Extended MeshCore mesh radio bot with multi-bot coordin
 
 1. Lets DMs through immediately (no coordination needed)
 2. For channel messages, queries local DB for:
-   - `outbound_hops` from `complete_contact_tracking`
-   - `infrastructure` (log-scaled fan-in) from `mesh_connections`
-   - `path_reliability` from `observed_paths` (observation count)
-   - `path_freshness` from `observed_paths` (how recent)
+
+- `infrastructure` (log-scaled fan-in, harmonic mean across path nodes) from `mesh_connections`
+- `path_bonus` (exact sender+path match) from `observed_paths`
+- `path_freshness` (recency decay) from `observed_paths`
+- `inbound_hops` from live `message.hops`
+
 3. Computes `delivery_score` = weighted blend of 4 components (see Coordination Flow)
 4. Checks with coordinator — 300ms bidding window, delivery-scored, best bot responds
 5. Falls back to delivery-score-aware delay if coordinator unreachable (500ms timeout)
@@ -54,7 +56,7 @@ community/
 ├── packet_reporter.py             # Background batch reporter
 ├── coverage_fallback.py           # Delivery-score-aware delay when coordinator down
 ├── config.py                      # CoordinatorConfig + ScoringConfig from env/ini
-├── scoring_observer_config.ini    # [Scoring] weights (hop, infra, reliability, freshness)
+├── scoring_observer_config.ini    # [Scoring] weights (infrastructure, hop, path_bonus, freshness)
 └── commands/
     ├── coverage_command.py        # "coverage" - show bot's score
     ├── botstatus_command.py       # "botstatus" - coordinator status
@@ -76,7 +78,7 @@ meshcore-bot/                      # Git submodule — DO NOT MODIFY DIRECTLY
 │   ├── commands/                 # Plugin commands (auto-discovered)
 │   └── web_viewer/               # Flask+SocketIO web UI (runs in own thread)
 docs/
-└── BEST_PATH_SCORE_DESIGN_PLAN.md # Design plan for best-path scoring feature (in-progress)
+└── PATH_FAMILIARITY_SCORE_DESIGN_PLAN.md # Delivery scoring design that matches community implementation
 ```
 
 ## DB Access Patterns
@@ -138,23 +140,25 @@ docker compose logs -f
 
 1. If message matches a command → `_coordinated_send_response()` runs:
    a. Query DB for delivery metrics:
-   - `outbound_hops` from `complete_contact_tracking.out_path_len`
-   - `infrastructure` = log1p(fan_in) / log1p(total_nodes) from `mesh_connections` (normalized so most-connected node = 1.0)
-   - `path_reliability` = obs_count / 20 from `observed_paths`
-   - `path_freshness` = exp(-age_hours / 6) from `observed_paths`
-     b. Compute `delivery_score = hop_score × 0.35 + infrastructure × 0.30 + reliability × 0.20 + freshness × 0.15`
-   - `hop_score = max(0, 1 - best_hops × 0.35)` where `best_hops = min(inbound_hops, outbound_hops)`
-   - Unknown components default to 0.5 (neutral)
-     c. Send hash + delivery_score to coordinator `POST /should-respond` (300ms bidding window)
+   - `infrastructure` from `mesh_connections` fan-in along inbound path
+   - `path_bonus` from exact sender+path match in `observed_paths`
+   - `path_freshness` from latest sender observation in `observed_paths`
+   - `inbound_hops` from live `message.hops`
+     b. Compute:
+   - `hop_score = 1 / (1 + inbound_hops)`
+   - `delivery_score = infrastructure×0.40 + hop_score×0.35 + path_bonus×0.15 + path_freshness×0.10`
+   - Defaults: infrastructure/freshness unknown → `0.5`; path_bonus unknown → `0.0`
+     c. Send hash + delivery_score to coordinator `POST /api/v1/coordination/should-respond` (300ms bidding window)
 2. If coordinator says yes → respond normally
 3. If coordinator says no → suppress (another bot handles it)
 4. If coordinator unreachable (>500ms) → `wait_before_responding_with_signal()` — delivery-score-aware delay so best-path bot wins the race
 
 **Key properties:**
 
-- **No local feeder bias:** Fan-in naturally low for private repeaters; backbone nodes high
-- **Anti-inflation:** Normalized to `total_nodes` so scores don't creep up as network grows
-- **Per-message freshness:** Path analyzed fresh on every message, not cached
+- **Infrastructure-priority weighting:** infrastructure is the dominant term at 40%
+- **Exact path bonus:** boolean 0/1 bonus from sender+path lookup
+- **Per-message scoring:** recomputed for every response bid
+- **Signal-aware fallback:** local delay uses same delivery formula (no blending with coordinator score)
 - Weights configurable via `scoring_observer_config.ini` or `SCORING_*` env vars
 
 ## Deployment

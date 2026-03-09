@@ -64,20 +64,20 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
         <div id=\"network\"></div>
       </section>
       <section class=\"card\">
-        <h3>Coordination (Last 60m)</h3>
+        <h3>Bot Performance (Last 60m)</h3>
         <div id=\"coord\"></div>
       </section>
       <section class=\"card\" style=\"grid-column: 1/-1;\">
         <h3>Top Repeaters</h3>
         <table>
           <thead><tr>
-            <th>Node</th>
-            <th title="Active &lt;17h · Recent 17–34h · Stale &gt;34h">Status</th>
-            <th title="Outbound hops from this bot to the relay node">Path</th>
-            <th title="Unique source nodes that route traffic through this relay">Fan-in</th>
-            <th title="Fan-in as % of total known nodes">Coverage</th>
-            <th title="Time since this relay was last seen in mesh traffic">Last seen</th>
-            <th title="Estimated bid score if a message arrives through this relay. Hover a row for the component breakdown.">Bid est.</th>
+            <th>Top</th>
+            <th title="Active &lt;24h · Recent 24–48h · Stale &gt;48h">Status</th>
+            <th title="Stored outbound hops from this bot to relay">Hops</th>
+            <th title="Unique source nodes routing through this relay">Links</th>
+            <th title="Links as % of total known nodes">Coverage</th>
+            <th title="Time since relay last seen in mesh traffic">Last</th>
+            <th title="Estimated delivery score. Hover row for component breakdown.">Score</th>
           </tr></thead>
           <tbody id="repeaters"></tbody>
         </table>
@@ -113,21 +113,39 @@ async function refresh() {
       <div><b>Last hour bid events:</b> ${data.coordination.event_count}</div>
     `;
 
-    document.getElementById('coord').innerHTML = Object.entries(data.coordination.stage_counts)
-      .map(([k, v]) => `<span class=\"pill\">${k}: ${v}</span>`).join('') || '<span class=\"pill\">No events</span>';
+    const coord = data.coordination;
+    const sc = coord.stage_counts;
+    const total = sc.bid || 0;
+    const won = sc.assigned_us || 0;
+    const lost = sc.assigned_other || 0;
+    const fallback = sc.fallback || 0;
+    const winRate = total > 0 ? ((won / total) * 100).toFixed(0) : 0;
+    const fallbackRate = total > 0 ? ((fallback / total) * 100).toFixed(0) : 0;
+    const avgScore = coord.avg_score !== null && coord.avg_score !== undefined ? coord.avg_score.toFixed(3) : 'n/a';
+    
+    if (total === 0) {
+      document.getElementById('coord').innerHTML = '<div style=\"color:var(--muted)\">No coordination events in last hour</div>';
+    } else {
+      document.getElementById('coord').innerHTML = `
+        <div><b>Bids:</b> ${total} (won ${won}, lost ${lost})</div>
+        <div><b>Win rate:</b> ${winRate}%</div>
+        <div><b>Avg score:</b> ${avgScore}</div>
+        <div><b>Fallback:</b> ${fallback} (${fallbackRate}%)</div>
+      `;
+    }
 
     const reps = data.top_repeaters;
     document.getElementById('repeaters').innerHTML = reps.map(r => {
-      const f = r.freshness;
-      const statusColor = f > 0.5 ? '#2d8a4e' : f > 0.25 ? '#b07d1a' : '#888';
-      const statusLabel = f > 0.5 ? 'Active' : f > 0.25 ? 'Recent' : 'Stale';
+      const ah = r.age_hours;
+      const statusColor = ah < 24 ? '#2d8a4e' : ah < 48 ? '#b07d1a' : '#888';
+      const statusLabel = ah < 24 ? 'Active' : ah < 48 ? 'Recent' : 'Stale';
       const oh = r.out_hops;
       const pathLabel = oh === null || oh === undefined
         ? '?' : oh === 0 ? 'direct' : `${oh} hop${oh > 1 ? 's' : ''}`;
       const ah = r.age_hours;
       const lastSeen = ah === null || ah === undefined ? '?'
         : ah < 1 ? '<1h ago' : ah < 24 ? `${Math.floor(ah)}h ago` : `${Math.floor(ah/24)}d ago`;
-      const tip = `hop=${r.hop_score.toFixed(2)} infra=${r.infra.toFixed(2)} rel=${r.reliability.toFixed(2)} fresh=${r.freshness.toFixed(2)}`;
+      const tip = `infra=${r.infra.toFixed(2)} hop=${r.hop_score.toFixed(2)} path_bonus=${r.path_bonus.toFixed(2)} fresh=${r.freshness.toFixed(2)}`;
       return `
       <tr title="${tip}">
         <td class="mono">${r.node}</td>
@@ -140,7 +158,7 @@ async function refresh() {
       </tr>`;
     }).join('') || '<tr><td colspan="7">No repeater data</td></tr>';
     document.getElementById('repeaters-caption').textContent =
-      'Status: Active <17h · Recent 17–34h · Stale >34h  ·  Bid est: hover row for component breakdown';
+      'Status: Active <24h · Recent 24–48h · Stale >48h  ·  Score: hover row for component breakdown';
 
     document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => `
       <tr>
@@ -265,34 +283,18 @@ def _community_metrics_impl(viewer):
             total_nodes = int((row["total_nodes"] if row else 0) or 0)
         total_nodes = max(total_nodes, 1)
 
-        # Significance = hop_score×0.35 + infra×0.30 + reliability×0.20 + freshness×0.15
-        # Uses the same four components and weights as coordinator bidding.
-        # Answers: "if a message arrives through this relay, how strong will this bot's bid be?"
-        #
-        # hop_score   = max(0, 1 - out_hops × 0.35)  from complete_contact_tracking
-        # infra       = reach × depth_frac  — topology quality; 0 for co-located/shallow feeders
-        # reliability = log1p(relay_obs) / log1p(max_relay_obs)  — frequency in paths
-        # freshness   = exp(-age_hours / 24)  — how recently seen in mesh_connections
+        # Estimated bid score with path-familiarity weights.
+        # Path bonus is message-specific, so repeater rows use 0.0.
         if "mesh_connections" in tables:
             cur.execute(
                 """
                 SELECT mc.to_prefix,
                        COUNT(DISTINCT mc.from_prefix) AS fan_in,
-                       SUM(mc.observation_count) AS obs,
-                       AVG(COALESCE(mc.avg_hop_position, 1)) AS avg_depth,
                        CAST((julianday('now') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
-                       (SELECT MAX(d)
-                        FROM (SELECT AVG(COALESCE(avg_hop_position, 1)) AS d
-                              FROM mesh_connections
-                              GROUP BY to_prefix)) AS max_depth,
                        (SELECT MAX(c)
                         FROM (SELECT COUNT(DISTINCT from_prefix) AS c
                               FROM mesh_connections
                               GROUP BY to_prefix)) AS max_fan_in,
-                       (SELECT MAX(s)
-                        FROM (SELECT SUM(observation_count) AS s
-                              FROM mesh_connections
-                              GROUP BY to_prefix)) AS max_relay_obs,
                        cct.out_hops
                 FROM mesh_connections mc
                 LEFT JOIN (
@@ -308,36 +310,26 @@ def _community_metrics_impl(viewer):
                 """
             )
             rows = cur.fetchall()
-            max_depth      = max(float(rows[0]["max_depth"] or 1.0), 1.0) if rows else 1.0
-            depth_range    = max(max_depth - 1, 0.001)
             max_fan_in     = max(int(rows[0]["max_fan_in"] or 1), 1) if rows else 1
             log_max_fan    = math.log1p(max_fan_in)
-            max_relay_obs  = max(int(rows[0]["max_relay_obs"] or 1), 1) if rows else 1
-            log_max_relay  = math.log1p(max_relay_obs)
             for r in rows:
                 fan_in      = int(r["fan_in"] or 0)
-                obs         = int(r["obs"] or 0)
-                avg_depth   = float(r["avg_depth"] or 1)
                 out_hops    = r["out_hops"]
                 age_hours   = float(r["age_hours"] or 999)
-                depth_frac  = max(avg_depth - 1, 0) / depth_range
-                reach       = math.log1p(fan_in) / log_max_fan
-                infra       = reach * depth_frac
-                reliability = math.log1p(obs) / log_max_relay
+                infra       = math.log1p(fan_in) / log_max_fan
+                hop_score   = 0.5
+                path_bonus  = 0.0
                 freshness   = math.exp(-age_hours / 24.0)
-                hop_score   = max(0.0, 1.0 - (int(out_hops) + 1) * 0.35) if out_hops is not None else 0.5
-                significance = hop_score * 0.35 + infra * 0.30 + reliability * 0.20 + freshness * 0.15
+                significance = infra * 0.40 + hop_score * 0.35 + path_bonus * 0.15 + freshness * 0.10
                 top_repeaters.append(
                     {
-                        "node": (r["to_prefix"] or "").upper(),
+                        "node": (r["to_prefix"] or "").upper().replace("!", "")[:4],
                         "fan_in": fan_in,
-                        "obs": obs,
-                        "avg_depth": round(avg_depth, 2),
                         "age_hours": round(age_hours, 1),
                         "out_hops": int(out_hops) if out_hops is not None else None,
                         "hop_score": round(hop_score, 3),
                         "infra": round(infra, 3),
-                        "reliability": round(reliability, 3),
+                        "path_bonus": round(path_bonus, 3),
                         "freshness": round(freshness, 3),
                         "significance": round(significance, 3),
                         "coverage_pct": (fan_in / total_nodes) * 100.0,
@@ -348,7 +340,6 @@ def _community_metrics_impl(viewer):
             top_repeaters = top_repeaters[:10]
             if top_repeaters:
                 top_repeaters[0]["_max_fan_in"] = max_fan_in
-                top_repeaters[0]["_max_depth"] = round(max_depth, 2)
 
         # Last 60 minutes of coordination snapshots injected by community layer
         if "packet_stream" in tables:
@@ -393,6 +384,10 @@ def _community_metrics_impl(viewer):
     finally:
         conn.close()
 
+      # Calculate average score for bid events
+      scores = [e["score"] for e in recent_events if e["score"] is not None and e["stage"] == "bid"]
+      avg_score = sum(scores) / len(scores) if scores else None
+
     return jsonify(
         {
             "timestamp": now,
@@ -404,6 +399,7 @@ def _community_metrics_impl(viewer):
             "coordination": {
                 "event_count": event_count,
                 "stage_counts": stage_counts,
+                "avg_score": avg_score,
                 "recent_events": recent_events[:50],
             },
         }

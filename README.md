@@ -4,7 +4,7 @@ A multi-bot-aware MeshCore mesh radio bot with coordinated response priority. Bu
 
 ## How It Works
 
-The community bot wraps the existing meshcore-bot and all its commands (weather, satellite passes, solar, etc.). When a message comes in on a channel, the bot checks with a central coordinator to see if it should respond. The bot with the highest coverage score gets priority. If the coordinator is unreachable, bots fall back to a score-based delay system.
+The community bot wraps the existing meshcore-bot and all its commands (weather, satellite passes, solar, etc.). When a message comes in on a channel, the bot checks with a central coordinator to see if it should respond. The bot with the highest **delivery score** gets priority. If the coordinator is unreachable, bots fall back to a delivery-score-based delay system.
 
 ```
 Your Radio ──► Community Bot ──► Coordinator API
@@ -20,8 +20,8 @@ Your Radio ──► Community Bot ──► Coordinator API
 
 Everything from [meshcore-bot](https://github.com/cj-vana/meshcore-bot), plus:
 
-- **Multi-Bot Coordination** - Only one bot responds per message, based on coverage score
-- **Coverage Scoring** - Your bot's score reflects signal quality, reachability, and uptime
+- **Multi-Bot Coordination** - Only one bot responds per message, based on per-message delivery score
+- **Path-Based Scoring** - Delivery score reflects infrastructure, hops, path familiarity, and freshness
 - **Automatic Fallback** - Works standalone if coordinator is unreachable
 - **Network Reporting** - Messages/packets are reported for network-wide analytics
 - **New Commands** - `coverage` (show your score) and `botstatus` (coordinator status)
@@ -140,10 +140,10 @@ If `COORDINATOR_URL` is empty or the coordinator is unreachable, the bot runs st
 
 All commands from meshcore-bot are available, plus:
 
-| Command     | Description                                          |
-| ----------- | ---------------------------------------------------- |
-| `coverage`  | Shows your bot's current coverage score              |
-| `botstatus` | Shows coordinator connection status and network info |
+| Command     | Description                                                       |
+| ----------- | ----------------------------------------------------------------- |
+| `coverage`  | Shows your bot's current coverage score (current coordinator api) |
+| `botstatus` | Shows coordinator connection status and network info              |
 
 ## Updating
 
