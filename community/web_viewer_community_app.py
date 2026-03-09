@@ -332,7 +332,7 @@ def _community_metrics_impl(viewer):
 
         # Estimated bid score with path-familiarity weights.
         # Path bonus is message-specific, so repeater rows use 0.0.
-        if "mesh_connections" in tables:
+        if "mesh_connections" in tables and "complete_contact_tracking" in tables:
           cur.execute(
             """
             SELECT mc.to_prefix,
@@ -343,7 +343,7 @@ def _community_metrics_impl(viewer):
                     FROM mesh_connections
                     GROUP BY to_prefix)) AS max_fan_in,
                  cct.out_hops,
-                 rn.name
+                 cct2.name
             FROM mesh_connections mc
             LEFT JOIN (
               SELECT LOWER(SUBSTR(public_key, 1, 2)) AS pfx,
@@ -353,8 +353,11 @@ def _community_metrics_impl(viewer):
               GROUP BY pfx
             ) AS cct ON cct.pfx = mc.to_prefix
             LEFT JOIN (
-              SELECT prefix, name FROM repeater_names
-            ) AS rn ON rn.prefix = mc.to_prefix
+              SELECT LOWER(SUBSTR(public_key, 1, 2)) AS prefix, MAX(name) AS name
+              FROM complete_contact_tracking
+              WHERE name IS NOT NULL AND name != ''
+              GROUP BY prefix
+            ) AS cct2 ON cct2.prefix = mc.to_prefix
             GROUP BY mc.to_prefix
             ORDER BY fan_in DESC
             LIMIT 50
