@@ -127,11 +127,21 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
         </table>
         <p id="repeaters-caption" style="font-size:12px;color:var(--muted);margin:6px 0 0;"></p>
       </section>
-      <section class=\"card\" style=\"grid-column: 1/-1;\">
+      <section class="card" style="grid-column: 1/-1;">
         <h3>Recent Bid Events</h3>
         <table>
-          <thead><tr><th>Time</th><th>Stage</th><th>Score</th><th>Details</th></tr></thead>
-          <tbody id=\"events\"></tbody>
+          <thead><tr>
+            <th>Time</th>
+            <th>Sender</th>
+            <th>Stage</th>
+            <th>Community Score</th>
+            <th>Infra</th>
+            <th>Hop</th>
+            <th>Path Bonus</th>
+            <th>Freshness</th>
+            <th>Details</th>
+          </tr></thead>
+          <tbody id="events"></tbody>
         </table>
       </section>
     </div>
@@ -248,11 +258,16 @@ async function refresh() {
     document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => `
       <tr>
         <td>${new Date(e.timestamp * 1000).toLocaleTimeString()}</td>
-        <td class=\"mono\">${e.stage}</td>
-        <td>${e.score === null ? 'n/a' : e.score.toFixed(3)}</td>
-        <td class=\"mono\">${e.summary}</td>
+        <td class="mono">${e.user || ''}</td>
+        <td class="mono">${e.stage}</td>
+        <td>${e.significance !== undefined && e.significance !== null ? e.significance.toFixed(3) : 'n/a'}</td>
+        <td>${e.infra !== undefined && e.infra !== null ? e.infra.toFixed(2) : 'n/a'}</td>
+        <td>${e.hop_score !== undefined && e.hop_score !== null ? e.hop_score.toFixed(2) : 'n/a'}</td>
+        <td>${e.path_bonus !== undefined && e.path_bonus !== null ? e.path_bonus.toFixed(2) : 'n/a'}</td>
+        <td>${e.freshness !== undefined && e.freshness !== null ? e.freshness.toFixed(2) : 'n/a'}</td>
+        <td class="mono">${e.summary}</td>
       </tr>
-    `).join('') || '<tr><td colspan=\"4\">No recent coordination events</td></tr>';
+    `).join('') || '<tr><td colspan="9">No recent coordination events</td></tr>';
   } catch (err) {
     document.getElementById('meta').textContent = `Load failed: ${err}`;
   }
@@ -478,27 +493,38 @@ def _community_metrics_impl(viewer):
 
             cmd = (payload.get("command") or "").strip()
             stage = None
+            // Only show coord_* events in the bid table
             if cmd.startswith("coord_"):
               stage = cmd.replace("coord_", "", 1)
               if stage not in stage_counts:
                 stage_counts[stage] = 0
               stage_counts[stage] += 1
               event_count += 1
-            else:
-              stage = cmd if cmd else "other"
 
-            summary = payload.get("response") or ""
-            ev_score = _extract_score(summary)
-            recent_events.append(
-              {
-                "timestamp": float(r["timestamp"]),
-                "stage": stage,
-                "score": ev_score,
-                "summary": summary,
-                "command_id": payload.get("command_id", ""),
-                "user": payload.get("user", ""),
-              }
-            )
+              // Extract score components if available
+              significance = payload.get("significance")
+              infra = payload.get("infra")
+              hop_score = payload.get("hop_score")
+              path_bonus = payload.get("path_bonus")
+              freshness = payload.get("freshness")
+
+              summary = payload.get("response") or ""
+              ev_score = _extract_score(summary)
+              recent_events.append(
+                {
+                  "timestamp": float(r["timestamp"]),
+                  "stage": stage,
+                  "score": ev_score,
+                  "summary": summary,
+                  "command_id": payload.get("command_id", ""),
+                  "user": payload.get("user", ""),
+                  "significance": significance,
+                  "infra": infra,
+                  "hop_score": hop_score,
+                  "path_bonus": path_bonus,
+                  "freshness": freshness,
+                }
+              )
 
         # DM statistics (last 60 minutes) - track sent DMs and ACK delivery confirmation
         if "packet_stream" in tables:
@@ -562,52 +588,4 @@ def _community_metrics_impl(viewer):
             user_rates.sort(key=lambda x: x["rate"], reverse=True)
             
             # Get top 3 and bottom 3
-            dm_stats["top_users"] = user_rates[:3] if len(user_rates) >= 3 else user_rates
-            dm_stats["bottom_users"] = user_rates[-3:][::-1] if len(user_rates) >= 3 else []
-
-    finally:
-        conn.close()
-
-    # Calculate average score for bid events
-    scores = [e["score"] for e in recent_events if e["score"] is not None and e["stage"] == "bid"]
-    avg_score = sum(scores) / len(scores) if scores else None
-
-    return jsonify(
-        {
-            "timestamp": now,
-            "db_path": viewer.db_path,
-            "network": {
-                "total_nodes": total_nodes,
-            },
-            "top_repeaters": top_repeaters,
-            "coordination": {
-                "event_count": event_count,
-                "stage_counts": stage_counts,
-                "avg_score": avg_score,
-                "recent_events": recent_events[:50],
-            },
-            "dm_stats": dm_stats,
-        }
-    )
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="MeshCore Community Data Viewer")
-    parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
-    parser.add_argument("--port", type=int, default=8080, help="Port to bind to")
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
-    parser.add_argument(
-        "--config",
-        default="config.ini",
-        help="Path to configuration file (default: config.ini)",
-    )
-    args = parser.parse_args()
-
-    viewer = BotDataViewer(config_path=args.config)
-    install_community_routes(viewer)
-    viewer.logger.info("Community routes installed: /community, /api/community/metrics")
-    viewer.run(host=args.host, port=args.port, debug=args.debug)
-
-
-if __name__ == "__main__":
-    main()
+            dm_stats["top_users"] = user_rates[:3] if len(user_rates) >= 3
