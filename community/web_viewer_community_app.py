@@ -493,7 +493,7 @@ def _community_metrics_impl(viewer):
 
             cmd = (payload.get("command") or "").strip()
             stage = None
-            // Only show coord_* events in the bid table
+            # Only show coord_* events in the bid table
             if cmd.startswith("coord_"):
               stage = cmd.replace("coord_", "", 1)
               if stage not in stage_counts:
@@ -501,7 +501,7 @@ def _community_metrics_impl(viewer):
               stage_counts[stage] += 1
               event_count += 1
 
-              // Extract score components if available
+              # Extract score components if available
               significance = payload.get("significance")
               infra = payload.get("infra")
               hop_score = payload.get("hop_score")
@@ -588,4 +588,25 @@ def _community_metrics_impl(viewer):
             user_rates.sort(key=lambda x: x["rate"], reverse=True)
             
             # Get top 3 and bottom 3
-            dm_stats["top_users"] = user_rates[:3] if len(user_rates) >= 3
+            dm_stats["top_users"] = user_rates[:3] if len(user_rates) >= 3 else user_rates
+            dm_stats["bottom_users"] = user_rates[-3:][::-1] if len(user_rates) >= 3 else []
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+    return jsonify({
+        "timestamp": now,
+        "db_path": viewer.db_path,
+        "network": {
+          "total_nodes": total_nodes,
+        },
+        "coordination": {
+          "event_count": event_count,
+          "stage_counts": stage_counts,
+          "avg_score": (sum(r["score"] for r in recent_events) / len(recent_events)) if recent_events else 0,
+          "recent_events": recent_events[-10:],  # Limit to latest 10 events for display
+        },
+        "dm_stats": dm_stats,
+        "top_repeaters": top_repeaters,
+    })
