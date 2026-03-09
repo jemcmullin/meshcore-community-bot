@@ -72,15 +72,12 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
         <table>
           <thead><tr>
             <th>Node</th>
-            <th title="hop_score×0.35 + infra×0.30 + reliability×0.20 + freshness×0.15">Significance</th>
-            <th title="min outbound hops to this node (complete_contact_tracking)">Out hops</th>
-            <th title="max(0, 1 − out_hops×0.35)">Hop score</th>
-            <th title="reach × depth_frac — topology quality; 0 for co-located/shallow feeders">Infra</th>
-            <th title="log1p(relay_obs)/log1p(max_relay_obs) — path observation frequency">Reliability</th>
-            <th title="exp(−age_hours/24) — how recently seen in mesh_connections">Freshness</th>
-            <th>Fan-in</th>
-            <th>Seen</th>
-            <th>Coverage</th>
+            <th title="Active &lt;17h · Recent 17–34h · Stale &gt;34h">Status</th>
+            <th title="Outbound hops from this bot to the relay node">Path</th>
+            <th title="Unique source nodes that route traffic through this relay">Fan-in</th>
+            <th title="Fan-in as % of total known nodes">Coverage</th>
+            <th title="Time since this relay was last seen in mesh traffic">Last seen</th>
+            <th title="Estimated bid score if a message arrives through this relay. Hover a row for the component breakdown.">Bid est.</th>
           </tr></thead>
           <tbody id="repeaters"></tbody>
         </table>
@@ -120,24 +117,30 @@ async function refresh() {
       .map(([k, v]) => `<span class=\"pill\">${k}: ${v}</span>`).join('') || '<span class=\"pill\">No events</span>';
 
     const reps = data.top_repeaters;
-    document.getElementById('repeaters').innerHTML = reps.map(r => `
-      <tr>
+    document.getElementById('repeaters').innerHTML = reps.map(r => {
+      const f = r.freshness;
+      const statusColor = f > 0.5 ? '#2d8a4e' : f > 0.25 ? '#b07d1a' : '#888';
+      const statusLabel = f > 0.5 ? 'Active' : f > 0.25 ? 'Recent' : 'Stale';
+      const oh = r.out_hops;
+      const pathLabel = oh === null || oh === undefined
+        ? '?' : oh === 0 ? 'direct' : `${oh} hop${oh > 1 ? 's' : ''}`;
+      const ah = r.age_hours;
+      const lastSeen = ah === null || ah === undefined ? '?'
+        : ah < 1 ? '<1h ago' : ah < 24 ? `${Math.floor(ah)}h ago` : `${Math.floor(ah/24)}d ago`;
+      const tip = `hop=${r.hop_score.toFixed(2)} infra=${r.infra.toFixed(2)} rel=${r.reliability.toFixed(2)} fresh=${r.freshness.toFixed(2)}`;
+      return `
+      <tr title="${tip}">
         <td class="mono">${r.node}</td>
-        <td><b>${r.significance.toFixed(3)}</b></td>
-        <td>${r.out_hops !== null && r.out_hops !== undefined ? r.out_hops : '?'}</td>
-        <td>${r.hop_score.toFixed(3)}</td>
-        <td>${r.infra.toFixed(3)}</td>
-        <td>${r.reliability.toFixed(3)}</td>
-        <td>${r.freshness.toFixed(3)}</td>
+        <td style="color:${statusColor};font-weight:bold">${statusLabel}</td>
+        <td>${pathLabel}</td>
         <td>${r.fan_in}</td>
-        <td>${r.obs}</td>
         <td>${r.coverage_pct.toFixed(0)}%</td>
-      </tr>
-    `).join('') || '<tr><td colspan="10">No repeater data</td></tr>';
-    if (reps.length && reps[0]._max_fan_in !== undefined) {
-      document.getElementById('repeaters-caption').textContent =
-        `significance = hop_score×0.35 + infra×0.30 + reliability×0.20 + freshness×0.15 · max fan-in: ${reps[0]._max_fan_in} · max depth: ${reps[0]._max_depth}`;
-    }
+        <td>${lastSeen}</td>
+        <td>${r.significance.toFixed(2)}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="7">No repeater data</td></tr>';
+    document.getElementById('repeaters-caption').textContent =
+      'Status: Active <17h · Recent 17–34h · Stale >34h  ·  Bid est: hover row for component breakdown';
 
     document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => `
       <tr>
@@ -322,7 +325,7 @@ def _community_metrics_impl(viewer):
                 infra       = reach * depth_frac
                 reliability = math.log1p(obs) / log_max_relay
                 freshness   = math.exp(-age_hours / 24.0)
-                hop_score   = max(0.0, 1.0 - int(out_hops) * 0.35) if out_hops is not None else 0.5
+                hop_score   = max(0.0, 1.0 - (int(out_hops) + 1) * 0.35) if out_hops is not None else 0.5
                 significance = hop_score * 0.35 + infra * 0.30 + reliability * 0.20 + freshness * 0.15
                 top_repeaters.append(
                     {
@@ -330,6 +333,7 @@ def _community_metrics_impl(viewer):
                         "fan_in": fan_in,
                         "obs": obs,
                         "avg_depth": round(avg_depth, 2),
+                        "age_hours": round(age_hours, 1),
                         "out_hops": int(out_hops) if out_hops is not None else None,
                         "hop_score": round(hop_score, 3),
                         "infra": round(infra, 3),
