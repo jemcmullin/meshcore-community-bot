@@ -22,6 +22,10 @@ ROOT = Path(__file__).resolve().parent.parent
 SUBMODULE_PATH = ROOT / "meshcore-bot"
 if str(SUBMODULE_PATH) not in sys.path:
     sys.path.insert(0, str(SUBMODULE_PATH))
+
+# Ensure ROOT is in sys.path for Docker and package resolution
+if str(ROOT) not in sys.path:
+  sys.path.insert(0, str(ROOT))
 COMMUNITY_PATH = ROOT / "community"
 if str(COMMUNITY_PATH) not in sys.path:
     sys.path.insert(0, str(COMMUNITY_PATH))
