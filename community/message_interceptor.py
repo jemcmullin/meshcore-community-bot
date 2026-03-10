@@ -188,10 +188,10 @@ class MessageInterceptor:
             message_hash=message_hash,
             stage="bid",
             delivery_score=delivery_score,
-            inbound_hops=message.hops,
-            infrastructure=infrastructure,
-            path_bonus=path_bonus,
-            path_freshness=path_freshness,
+            hop_component=hop_component,
+            infra_component=infra_component,
+            path_bonus_component=path_bonus_component,
+            freshness_component=freshness_component,
         )
         logger.debug(
             f"Scoring detail sender={message.sender_pubkey or 'unknown'!r:.12} "
@@ -222,10 +222,10 @@ class MessageInterceptor:
                 message_hash=message_hash,
                 stage="assigned_us",
                 delivery_score=delivery_score,
-                inbound_hops=message.hops,
-                infrastructure=infrastructure,
-                path_bonus=path_bonus,
-                path_freshness=path_freshness,
+                hop_component=hop_component,
+                infra_component=infra_component,
+                path_bonus_component=path_bonus_component,
+                freshness_component=freshness_component,
             )
             result = await self._original_send_response(message, content, **kwargs)
             if hasattr(self.bot, "messages_responded_count"):
@@ -240,10 +240,10 @@ class MessageInterceptor:
                 message_hash=message_hash,
                 stage="assigned_other",
                 delivery_score=delivery_score,
-                inbound_hops=message.hops,
-                infrastructure=infrastructure,
-                path_bonus=path_bonus,
-                path_freshness=path_freshness,
+                hop_component=hop_component,
+                infra_component=infra_component,
+                path_bonus_component=path_bonus_component,
+                freshness_component=freshness_component,
             )
             await self._report_message(message, bot_responded=False, message_hash=message_hash)
             return True  # don't surface as failure to command
@@ -265,10 +265,10 @@ class MessageInterceptor:
                 message_hash=message_hash,
                 stage="fallback_suppressed",
                 delivery_score=delivery_score,
-                inbound_hops=message.hops,
-                infrastructure=infrastructure,
-                path_bonus=path_bonus,
-                path_freshness=path_freshness,
+                hop_component=hop_component,
+                infra_component=infra_component,
+                path_bonus_component=path_bonus_component,
+                freshness_component=freshness_component,
             )
             await self._report_message(message, bot_responded=False, message_hash=message_hash)
             return True  # command handled; intentionally silenced in fallback
@@ -278,10 +278,10 @@ class MessageInterceptor:
             message_hash=message_hash,
             stage="fallback",
             delivery_score=delivery_score,
-            inbound_hops=message.hops,
-            infrastructure=infrastructure,
-            path_bonus=path_bonus,
-            path_freshness=path_freshness,
+            hop_component=hop_component,
+            infra_component=infra_component,
+            path_bonus_component=path_bonus_component,
+            freshness_component=freshness_component,
         )
         await self.fallback.wait_before_responding_with_signal(
             hops=message.hops,
@@ -451,10 +451,10 @@ class MessageInterceptor:
         message_hash: str,
         stage: str,
         delivery_score: float,
-        inbound_hops: Optional[int],
-        infrastructure: Optional[float],
-        path_bonus: Optional[float],
-        path_freshness: Optional[float],
+        hop_component: Optional[float],
+        infra_component: Optional[float],
+        path_bonus_component: Optional[float],
+        freshness_component: Optional[float],
     ) -> None:
         """Publish coordination score snapshots to web viewer command stream.
 
@@ -465,10 +465,10 @@ class MessageInterceptor:
             return
 
         summary = (
-            f"stage={stage} score={delivery_score:.3f} in={inbound_hops} "
-            f"infra={infrastructure if infrastructure is not None else 'n/a'} "
-            f"path_bonus={path_bonus if path_bonus is not None else 'n/a'} "
-            f"fresh={path_freshness if path_freshness is not None else 'n/a'}"
+            f"stage={stage} score={delivery_score:.3f} hop_comp={hop_component if hop_component is not None else 'n/a'} "
+            f"infra_comp={infra_component if infra_component is not None else 'n/a'} "
+            f"path_bonus_comp={path_bonus_component if path_bonus_component is not None else 'n/a'} "
+            f"fresh_comp={freshness_component if freshness_component is not None else 'n/a'}"
         )
 
         command_id = f"coord:{message_hash[:12]}"

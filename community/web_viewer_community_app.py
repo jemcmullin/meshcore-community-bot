@@ -222,7 +222,7 @@ setInterval(refresh, 5000);
 """
 
 
-SCORE_RE = re.compile(r"\\bscore=([0-9]*\\.?[0-9]+)")
+# SCORE_RE = re.compile(r"\\bscore=([0-9]*\\.?[0-9]+)")
 
 
 def _safe_float(val):
@@ -234,13 +234,13 @@ def _safe_float(val):
         return None
 
 
-def _extract_score(summary: str):
-    if not summary:
-        return None
-    m = SCORE_RE.search(summary)
-    if not m:
-        return None
-    return _safe_float(m.group(1))
+# def _extract_score(summary: str):
+#     if not summary:
+#         return None
+#     m = SCORE_RE.search(summary)
+#     if not m:
+#         return None
+#     return _safe_float(m.group(1))
 
 
 def install_community_routes(viewer: BotDataViewer) -> None:
@@ -304,7 +304,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
 
 def _community_metrics_impl(viewer):
-    import datetime
+    import re
     now = time.time()
     # Calculate local timezone offset in seconds
     # now_dt = datetime.datetime.now()
@@ -321,6 +321,12 @@ def _community_metrics_impl(viewer):
         "top_users": [],
         "bottom_users": []
     }
+
+    def _extract_score_from_summary(summary):
+      m = re.search(r"\bscore=([0-9]*\.?[0-9]+)", summary)
+      score = float(m.group(1)) if m else None
+      cleaned_summary = re.sub(r"\bscore=([0-9]*\.?[0-9]+)", "", summary).strip()
+      return score, cleaned_summary
 
     conn = sqlite3.connect(viewer.db_path, timeout=60)
     conn.row_factory = sqlite3.Row
@@ -377,15 +383,22 @@ def _community_metrics_impl(viewer):
           rows = cur.fetchall()
           max_fan_in     = max(int(rows[0]["max_fan_in"] or 1), 1) if rows else 1
           log_max_fan    = math.log1p(max_fan_in)
+          from community.config import ScoringConfig
+          scoring_cfg = ScoringConfig()
           for r in rows:
             fan_in      = int(r["fan_in"] or 0)
             out_hops    = r["out_hops"]
             age_hours   = float(r["age_hours"] or 999)
             infra       = math.log1p(fan_in) / log_max_fan
-            hop_score   = 0.5
+            hop_score   = 0.5 if out_hops is None else (1.0 / (1 + out_hops))
             path_bonus  = 0.0
             freshness   = math.exp(-age_hours / 24.0)
-            significance = infra * 0.40 + hop_score * 0.35 + path_bonus * 0.15 + freshness * 0.10
+            significance = (
+                infra * scoring_cfg.infrastructure_weight +
+                hop_score * scoring_cfg.hop_weight +
+                path_bonus * scoring_cfg.path_bonus_weight +
+                freshness * scoring_cfg.freshness_weight
+            )
             top_repeaters.append(
               {
                 "node": (r["to_prefix"] or "").upper().replace("!", "")[:4],
@@ -438,14 +451,15 @@ def _community_metrics_impl(viewer):
             event_count += 1
 
             summary = payload.get("response") or ""
-            ev_score = _extract_score(summary)
-            # Adjust event timestamp for frontend display
+            # Remove score and any stage marker (stage=word)
+            summary_without_stage = re.sub(r"\bstage=\w+\b", "", summary).strip()
+            event_score, summary_without_score = _extract_score_from_summary(summary_without_stage)
             recent_events.append(
               {
                 "timestamp": float(r["timestamp"]), # - tz_offset_sec,
                 "stage": stage,
-                "score": ev_score,
-                "summary": summary,
+                "score": event_score,
+                "summary": summary_without_score,
               }
             )
 
