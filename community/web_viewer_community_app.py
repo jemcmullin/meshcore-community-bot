@@ -59,13 +59,13 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
     <h1>Community Metrics</h1>
     <div class=\"meta\" id=\"meta\">Loading...</div>
     <div class=\"grid\">
-      <section class=\"card\">
-        <h3>Network</h3>
-        <div id=\"network\"></div>
+      <section class="card">
+        <h3>Bot Performance (Last 24h)</h3>
+        <div id="coord"></div>
       </section>
-      <section class=\"card\">
-        <h3>Bot Performance (Last 60m)</h3>
-        <div id=\"coord\"></div>
+      <section class="card">
+        <h3>Direct Messages (Last 24h)</h3>
+        <div id="dm-stats"></div>
       </section>
       <section class=\"card\">
         <h3>Direct Messages (Last 60m)</h3>
@@ -203,8 +203,8 @@ async function refresh() {
 
     document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => `
       <tr>
-        # Timestamp is already local time from the database, so display as-is without timezone conversion
-        <td>${new Date(e.timestamp * 1000).toLocaleTimeString('en-US', { hour12: false, timeZone: 'UTC' })}</td>
+        <!-- Timestamp is already local time from the database, so display as-is without timezone conversion -->
+        <td>${new Date(e.timestamp * 1000).toLocaleTimeString('en-US', { hour12: true, timeZone: 'UTC' })}</td>
         <td class=\"mono\">${e.stage}</td>
         <td>${e.score === null ? 'n/a' : e.score.toFixed(3)}</td>
         <td class=\"mono\">${e.summary}</td>
