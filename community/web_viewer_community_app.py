@@ -79,7 +79,7 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
         <div id=\"dm-stats\"></div>
       </section>
       <section class=\"card\" style=\"grid-column: 1/-1;\">
-        <h3>Top Repeaters</h3>
+        <h3>Top Repeaters <span style="font-size:12px;color:var(--muted);">(this bot's bid scoring perspective)</span></h3>
         <table>
           <thead><tr>
             <th>Top</th>
@@ -399,7 +399,7 @@ def _community_metrics_impl(viewer):
             out_hops    = r["out_hops"]
             age_hours   = float(r["age_hours"] or 999)
             infra       = math.log1p(fan_in) / log_max_fan
-            hop_score   = 0.5 if out_hops is None else (1.0 / (1 + out_hops))
+            hop_score   = 0.25 if out_hops is None else (1.0 / (1 + out_hops))
             path_bonus  = 0.0
             freshness   = math.exp(-age_hours / 24.0)
             significance = (
