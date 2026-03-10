@@ -333,11 +333,16 @@ def _community_metrics_impl(viewer):
         # Estimated bid score with path-familiarity weights.
         # Path bonus is message-specific, so repeater rows use 0.0.
         if "mesh_connections" in tables and "complete_contact_tracking" in tables:
+          # Calculate local timezone offset in hours
+          import datetime
+          now_dt = datetime.datetime.now()
+          now_utc = datetime.datetime.utcnow()
+          tz_offset_hours = (now_dt - now_utc).total_seconds() / 3600.0
           cur.execute(
-            """
+            f"""
             SELECT mc.to_prefix,
                  COUNT(DISTINCT mc.from_prefix) AS fan_in,
-                 CAST((julianday('now') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
+                 CAST((julianday('now') - julianday(MAX(mc.last_seen))) * 24 - {tz_offset_hours:.2f} AS REAL) AS age_hours,
                  (SELECT MAX(c)
                 FROM (SELECT COUNT(DISTINCT from_prefix) AS c
                     FROM mesh_connections
