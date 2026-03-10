@@ -36,6 +36,7 @@ class MessageInterceptor:
         self._original_send_response = bot.command_manager.send_response
 
         async def _bound_send_response(cm_self, message, content: str, **kwargs):
+            logger.info(f"Bound send_response called for message [{(message.content or '')[:50]}] from {message.sender_id or 'unknown'}")
             return await self._coordinated_send_response(message, content, **kwargs)
 
         bot.command_manager.send_response = MethodType(
@@ -48,6 +49,7 @@ class MessageInterceptor:
             self._original_process_message = bot.message_handler.process_message
 
             async def _bound_process_message(mh_self, message):
+                logger.info(f"Bound process_message called for message [{(message.content or '')[:50]}] from {message.sender_id or 'unknown'}")
                 return await self._observing_process_message(message)
 
             bot.message_handler.process_message = MethodType(
@@ -75,6 +77,7 @@ class MessageInterceptor:
 
     async def _coordinated_send_response(self, message, content: str, **kwargs) -> bool:
         """Gate send_response through the coordinator bidding window."""
+        logger.info(f"Intercepted send_response for message [{(message.content or '')[:50]}] from {message.sender_id or 'unknown'}")
         # DMs always go through
         if message.is_dm:
             result = await self._original_send_response(message, content, **kwargs)
@@ -127,6 +130,7 @@ class MessageInterceptor:
         content_prefix = words[0][:50] if words else ""
 
         # Get path metrics for delivery scoring
+        #TODO handle hops here, keeps metrics together
         infrastructure, path_bonus, path_freshness = await self._get_path_metrics(message)
 
         # Compute and log the delivery score that will be sent to the coordinator
