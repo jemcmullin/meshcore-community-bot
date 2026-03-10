@@ -203,7 +203,8 @@ async function refresh() {
 
     document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => `
       <tr>
-        <td>${new Date(e.timestamp * 1000).toLocaleTimeString()}</td>
+        # Timestamp is already local time from the database, so display as-is without timezone conversion
+        <td>${new Date(e.timestamp * 1000).toLocaleTimeString('en-US', { hour12: false, timeZone: 'UTC' })}</td>
         <td class=\"mono\">${e.stage}</td>
         <td>${e.score === null ? 'n/a' : e.score.toFixed(3)}</td>
         <td class=\"mono\">${e.summary}</td>
