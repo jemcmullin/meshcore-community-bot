@@ -280,60 +280,60 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 </script>
 """
-            if "packet_stream" in tables:
-              # Adjust cutoff for local time
-              cutoff = now - (24 * 60 * 60) + tz_offset_sec
-              # Query 'command' entries for DM transmissions with ACK tracking
-              cur.execute(
-                """
-                SELECT timestamp, data
-                FROM packet_stream
-                WHERE type = 'command' AND timestamp >= ?
-                ORDER BY timestamp DESC
-                LIMIT 1000
-                """,
-                (cutoff,),
-              )
-              user_stats = {}  # Track per-user DM stats
-              for r in cur.fetchall():
-                try:
-                  payload = json.loads(r["data"])
-                except (TypeError, ValueError, json.JSONDecodeError):
-                  continue
+            if "</body>" in body:
+                body = body.replace("</body>", nav_script + "\n</body>", 1)
+                response.set_data(body)
+                response.headers["Content-Length"] = str(len(body.encode("utf-8")))
+        except Exception:
+            # Never fail page delivery due to nav injection issues.
+            return response
+        return response
 
-                # Look for DM commands with command_id pattern "dm_*"
-                command_id = payload.get("command_id", "")
-                if not command_id or not command_id.startswith("dm_"):
-                  continue
-                # Extract recipient from command_id or user field
-                recipient = payload.get("user", "Unknown")
-                # This is a DM transmission
-                dm_stats["total_dms"] += 1
-                # Track per-user stats
-                if recipient not in user_stats:
-                  user_stats[recipient] = {"sent": 0, "delivered": 0}
-                user_stats[recipient]["sent"] += 1
-                # Check if ACK was received ('success' field indicates ACK received)
-                success = payload.get("success", False)
-                if success:
-                  dm_stats["dms_with_response"] += 1
-                  user_stats[recipient]["delivered"] += 1
-              # Calculate success rates and get top/bottom users
-              user_rates = []
-              for user, stats in user_stats.items():
-                if stats["sent"] >= 2:  # Only include users with at least 2 DMs
-                  rate = (stats["delivered"] / stats["sent"]) * 100
-                  user_rates.append({
-                    "user": user,
-                    "sent": stats["sent"],
-                    "delivered": stats["delivered"],
-                    "rate": round(rate, 0)
-                  })
-              # Sort by rate (descending)
-              user_rates.sort(key=lambda x: x["rate"], reverse=True)
-              # Get top 3 and bottom 3
-              dm_stats["top_users"] = user_rates[:3] if len(user_rates) >= 3 else user_rates
-              dm_stats["bottom_users"] = user_rates[-3:][::-1] if len(user_rates) >= 3 else []
+    @viewer.app.route("/community")
+    def community_page():
+        return render_template_string(COMMUNITY_PAGE_HTML)
+
+    @viewer.app.route("/api/community/metrics")
+    def community_metrics():
+        try:
+            return _community_metrics_impl(viewer)
+        except Exception as exc:
+            import traceback
+            return jsonify({"error": str(exc), "trace": traceback.format_exc()}), 500
+
+
+def _community_metrics_impl(viewer):
+    import datetime
+    now = time.time()
+    # Calculate local timezone offset in seconds
+    now_dt = datetime.datetime.now()
+    now_utc = datetime.datetime.utcnow()
+    tz_offset_sec = int((now_dt - now_utc).total_seconds())
+    top_repeaters = []
+    stage_counts = {"bid": 0, "assigned_us": 0, "assigned_other": 0, "fallback": 0}
+    recent_events = []
+    event_count = 0
+    total_nodes = 0
+    dm_stats = {
+        "total_dms": 0,
+        "dms_with_response": 0,
+        "top_users": [],
+        "bottom_users": []
+    }
+
+    conn = sqlite3.connect(viewer.db_path, timeout=60)
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = {r["name"] for r in cur.fetchall()}
+
+        # Total distinct sender nodes observed in mesh connections
+        if "mesh_connections" in tables:
+            cur.execute("SELECT COUNT(DISTINCT from_prefix) AS total_nodes FROM mesh_connections")
+            row = cur.fetchone()
+            total_nodes = int((row["total_nodes"] if row else 0) or 0)
+        total_nodes = max(total_nodes, 1)
 
         # Estimated bid score with path-familiarity weights.
         # Path bonus is message-specific, so repeater rows use 0.0.
@@ -451,7 +451,7 @@ document.addEventListener('DOMContentLoaded', function () {
         # DM statistics (last 60 minutes) - track sent DMs and ACK delivery confirmation
         if "packet_stream" in tables:
           # Adjust cutoff for local time
-          cutoff = now - (24 * 60 * 60) + tz_offset_sec
+            cutoff = now - (24 * 60 * 60) + tz_offset_sec
             
             # Query 'command' entries for DM transmissions with ACK tracking
             cur.execute(
