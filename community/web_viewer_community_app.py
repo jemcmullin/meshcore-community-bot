@@ -59,16 +59,16 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
     <h1>Community Metrics</h1>
     <div class=\"meta\" id=\"meta\">Loading...</div>
     <div class=\"grid\">
-      <section class="card">
-        <h3>Bot Performance (Last 24h)</h3>
-        <div id="coord"></div>
-      </section>
-      <section class="card">
-        <h3>Direct Messages (Last 24h)</h3>
-        <div id="dm-stats"></div>
+      <section class=\"card\">
+        <h3>Network</h3>
+        <div id=\"network\"></div>
       </section>
       <section class=\"card\">
-        <h3>Direct Messages (Last 60m)</h3>
+        <h3>Bot Performance (Last 24hr)</h3>
+        <div id=\"coord\"></div>
+      </section>
+      <section class=\"card\">
+        <h3>Direct Messages (Last 24hr)</h3>
         <div id=\"dm-stats\"></div>
       </section>
       <section class=\"card\" style=\"grid-column: 1/-1;\">
@@ -407,7 +407,7 @@ def _community_metrics_impl(viewer):
           if top_repeaters:
             top_repeaters[0]["_max_fan_in"] = max_fan_in
 
-        # Last 60 minutes of coordination snapshots injected by community layer
+        # Last 24 hrs of coordination snapshots injected by community layer
         if "packet_stream" in tables:
           # Adjust cutoff for local time
           cutoff = now - (24 * 60 * 60) + tz_offset_sec
@@ -449,7 +449,7 @@ def _community_metrics_impl(viewer):
               }
             )
 
-        # DM statistics (last 60 minutes) - track sent DMs and ACK delivery confirmation
+        # DM statistics (last 24 hrs) - track sent DMs and ACK delivery confirmation
         if "packet_stream" in tables:
           # Adjust cutoff for local time
             cutoff = now - (24 * 60 * 60) + tz_offset_sec
