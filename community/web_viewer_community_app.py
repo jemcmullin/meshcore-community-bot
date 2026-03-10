@@ -25,45 +25,6 @@ if str(SUBMODULE_PATH) not in sys.path:
 
 from modules.web_viewer.app import BotDataViewer  # noqa: E402
 
-# --- Monkey-patch BotDataViewer to ensure capture_command logs coordination events ---
-import sqlite3
-import json
-def _community_capture_command(self, message, command, response, success, command_id):
-  try:
-    db_path = getattr(self, 'db_path', None)
-    if not db_path:
-      return
-    # Build payload for both coordination and DM events
-    payload = {
-      "command": command,
-      "response": response,
-      "success": success,
-      "command_id": command_id,
-      "user": getattr(message, 'sender_id', None),
-      "timestamp": getattr(message, 'timestamp', None),
-    }
-    # For DM commands, add extra fields if available
-    if command_id and str(command_id).startswith("dm_"):
-      payload["dm_content"] = getattr(message, 'content', None)
-      payload["dm_channel"] = getattr(message, 'channel', None)
-      payload["dm_is_dm"] = getattr(message, 'is_dm', None)
-      payload["dm_hops"] = getattr(message, 'hops', None)
-      payload["dm_path"] = getattr(message, 'path', None)
-    conn = sqlite3.connect(db_path, timeout=60)
-    try:
-      cur = conn.cursor()
-      cur.execute(
-        "INSERT INTO packet_stream (timestamp, data, type) VALUES (?, ?, ?)",
-        (float(payload["timestamp"] or time.time()), json.dumps(payload), "command")
-      )
-      conn.commit()
-    finally:
-      conn.close()
-  except Exception as exc:
-    pass  # Do not break bot operation if logging fails
-
-BotDataViewer.capture_command = _community_capture_command
-
 
 COMMUNITY_PAGE_HTML = """<!doctype html>
 <html lang=\"en\">
@@ -127,21 +88,11 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
         </table>
         <p id="repeaters-caption" style="font-size:12px;color:var(--muted);margin:6px 0 0;"></p>
       </section>
-      <section class="card" style="grid-column: 1/-1;">
+      <section class=\"card\" style=\"grid-column: 1/-1;\">
         <h3>Recent Bid Events</h3>
         <table>
-          <thead><tr>
-            <th>Time</th>
-            <th>Sender</th>
-            <th>Stage</th>
-            <th>Community Score</th>
-            <th>Infra</th>
-            <th>Hop</th>
-            <th>Path Bonus</th>
-            <th>Freshness</th>
-            <th>Details</th>
-          </tr></thead>
-          <tbody id="events"></tbody>
+          <thead><tr><th>Time</th><th>Stage</th><th>Score</th><th>Details</th></tr></thead>
+          <tbody id=\"events\"></tbody>
         </table>
       </section>
     </div>
@@ -231,13 +182,8 @@ async function refresh() {
       const oh = r.out_hops;
       const pathLabel = oh === null || oh === undefined
         ? '?' : oh === 0 ? 'direct' : `${oh} hop${oh > 1 ? 's' : ''}`;
-      let lastSeen = '?';
-      if (r.last_seen_ts !== null && r.last_seen_ts !== undefined) {
-        const dt = new Date(r.last_seen_ts * 1000);
-        lastSeen = dt.toLocaleString();
-      } else if (ah !== null && ah !== undefined) {
-        lastSeen = ah < 1 ? '<1h ago' : ah < 24 ? `${Math.floor(ah)}h ago` : `${Math.floor(ah/24)}d ago`;
-      }
+      const lastSeen = ah === null || ah === undefined ? '?'
+        : ah < 1 ? '<1h ago' : ah < 24 ? `${Math.floor(ah)}h ago` : `${Math.floor(ah/24)}d ago`;
       const tip = `infra=${r.infra.toFixed(2)} hop=${r.hop_score.toFixed(2)} path_bonus=${r.path_bonus.toFixed(2)} fresh=${r.freshness.toFixed(2)}`;
       const name = r.name ? r.name : '';
       return `
@@ -258,16 +204,11 @@ async function refresh() {
     document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => `
       <tr>
         <td>${new Date(e.timestamp * 1000).toLocaleTimeString()}</td>
-        <td class="mono">${e.user || ''}</td>
-        <td class="mono">${e.stage}</td>
-        <td>${e.significance !== undefined && e.significance !== null ? e.significance.toFixed(3) : 'n/a'}</td>
-        <td>${e.infra !== undefined && e.infra !== null ? e.infra.toFixed(2) : 'n/a'}</td>
-        <td>${e.hop_score !== undefined && e.hop_score !== null ? e.hop_score.toFixed(2) : 'n/a'}</td>
-        <td>${e.path_bonus !== undefined && e.path_bonus !== null ? e.path_bonus.toFixed(2) : 'n/a'}</td>
-        <td>${e.freshness !== undefined && e.freshness !== null ? e.freshness.toFixed(2) : 'n/a'}</td>
-        <td class="mono">${e.summary}</td>
+        <td class=\"mono\">${e.stage}</td>
+        <td>${e.score === null ? 'n/a' : e.score.toFixed(3)}</td>
+        <td class=\"mono\">${e.summary}</td>
       </tr>
-    `).join('') || '<tr><td colspan="9">No recent coordination events</td></tr>';
+    `).join('') || '<tr><td colspan=\"4\">No recent coordination events</td></tr>';
   } catch (err) {
     document.getElementById('meta').textContent = `Load failed: ${err}`;
   }
@@ -434,22 +375,6 @@ def _community_metrics_impl(viewer):
             path_bonus  = 0.0
             freshness   = math.exp(-age_hours / 24.0)
             significance = infra * 0.40 + hop_score * 0.35 + path_bonus * 0.15 + freshness * 0.10
-            # Calculate last_seen_ts (UNIX timestamp) for each repeater
-            cur2 = conn.cursor()
-            cur2.execute(
-                "SELECT MAX(last_seen) AS last_seen FROM mesh_connections WHERE to_prefix = ?",
-                (r["to_prefix"],)
-            )
-            last_seen_row = cur2.fetchone()
-            last_seen_str = last_seen_row["last_seen"] if last_seen_row and last_seen_row["last_seen"] else None
-            last_seen_ts = None
-            if last_seen_str:
-                try:
-                    import datetime
-                    dt = datetime.datetime.fromisoformat(last_seen_str)
-                    last_seen_ts = dt.timestamp()
-                except Exception:
-                    last_seen_ts = None
             top_repeaters.append(
               {
                 "node": (r["to_prefix"] or "").upper().replace("!", "")[:4],
@@ -463,7 +388,6 @@ def _community_metrics_impl(viewer):
                 "freshness": round(freshness, 3),
                 "significance": round(significance, 3),
                 "coverage_pct": (fan_in / total_nodes) * 100.0,
-                "last_seen_ts": last_seen_ts,
               }
             )
           # Re-sort by significance (SQL ordered by fan_in; significance order differs)
@@ -472,59 +396,45 @@ def _community_metrics_impl(viewer):
           if top_repeaters:
             top_repeaters[0]["_max_fan_in"] = max_fan_in
 
-        # Last 60 minutes of command events (bids, DMs, etc.)
+        # Last 60 minutes of coordination snapshots injected by community layer
         if "packet_stream" in tables:
-          cutoff = now - (60 * 60)
-          cur.execute(
-            """
-            SELECT timestamp, data
-            FROM packet_stream
-            WHERE type = 'command' AND timestamp >= ?
-            ORDER BY timestamp DESC
-            LIMIT 500
-            """,
-            (cutoff,),
-          )
-          for r in cur.fetchall():
-            try:
-              payload = json.loads(r["data"])
-            except (TypeError, ValueError, json.JSONDecodeError):
-              continue
+            cutoff = now - (60 * 60)
+            cur.execute(
+                """
+                SELECT timestamp, data
+                FROM packet_stream
+                WHERE type = 'command' AND timestamp >= ?
+                ORDER BY timestamp DESC
+                LIMIT 500
+                """,
+                (cutoff,),
+            )
+            for r in cur.fetchall():
+                try:
+                    payload = json.loads(r["data"])
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
 
-            cmd = (payload.get("command") or "").strip()
-            stage = None
-            # Only show coord_* events in the bid table
-            if cmd.startswith("coord_"):
-              stage = cmd.replace("coord_", "", 1)
-              if stage not in stage_counts:
-                stage_counts[stage] = 0
-              stage_counts[stage] += 1
-              event_count += 1
+                cmd = (payload.get("command") or "").strip()
+                if not cmd.startswith("coord_"):
+                    continue
 
-              # Extract score components if available
-              significance = payload.get("significance")
-              infra = payload.get("infra")
-              hop_score = payload.get("hop_score")
-              path_bonus = payload.get("path_bonus")
-              freshness = payload.get("freshness")
+                stage = cmd.replace("coord_", "", 1)
+                if stage not in stage_counts:
+                    stage_counts[stage] = 0
+                stage_counts[stage] += 1
+                event_count += 1
 
-              summary = payload.get("response") or ""
-              ev_score = _extract_score(summary)
-              recent_events.append(
-                {
-                  "timestamp": float(r["timestamp"]),
-                  "stage": stage,
-                  "score": ev_score,
-                  "summary": summary,
-                  "command_id": payload.get("command_id", ""),
-                  "user": payload.get("user", ""),
-                  "significance": significance,
-                  "infra": infra,
-                  "hop_score": hop_score,
-                  "path_bonus": path_bonus,
-                  "freshness": freshness,
-                }
-              )
+                summary = payload.get("response") or ""
+                ev_score = _extract_score(summary)
+                recent_events.append(
+                    {
+                        "timestamp": float(r["timestamp"]),
+                        "stage": stage,
+                        "score": ev_score,
+                        "summary": summary,
+                    }
+                )
 
         # DM statistics (last 60 minutes) - track sent DMs and ACK delivery confirmation
         if "packet_stream" in tables:
@@ -590,23 +500,50 @@ def _community_metrics_impl(viewer):
             # Get top 3 and bottom 3
             dm_stats["top_users"] = user_rates[:3] if len(user_rates) >= 3 else user_rates
             dm_stats["bottom_users"] = user_rates[-3:][::-1] if len(user_rates) >= 3 else []
-    except Exception:
-        pass
+
     finally:
         conn.close()
 
-    return jsonify({
-        "timestamp": now,
-        "db_path": viewer.db_path,
-        "network": {
-          "total_nodes": total_nodes,
-        },
-        "coordination": {
-          "event_count": event_count,
-          "stage_counts": stage_counts,
-          "avg_score": (sum(r["score"] for r in recent_events) / len(recent_events)) if recent_events else 0,
-          "recent_events": recent_events[-10:],  # Limit to latest 10 events for display
-        },
-        "dm_stats": dm_stats,
-        "top_repeaters": top_repeaters,
-    })
+    # Calculate average score for bid events
+    scores = [e["score"] for e in recent_events if e["score"] is not None and e["stage"] == "bid"]
+    avg_score = sum(scores) / len(scores) if scores else None
+
+    return jsonify(
+        {
+            "timestamp": now,
+            "db_path": viewer.db_path,
+            "network": {
+                "total_nodes": total_nodes,
+            },
+            "top_repeaters": top_repeaters,
+            "coordination": {
+                "event_count": event_count,
+                "stage_counts": stage_counts,
+                "avg_score": avg_score,
+                "recent_events": recent_events[:50],
+            },
+            "dm_stats": dm_stats,
+        }
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="MeshCore Community Data Viewer")
+    parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
+    parser.add_argument("--port", type=int, default=8080, help="Port to bind to")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument(
+        "--config",
+        default="config.ini",
+        help="Path to configuration file (default: config.ini)",
+    )
+    args = parser.parse_args()
+
+    viewer = BotDataViewer(config_path=args.config)
+    install_community_routes(viewer)
+    viewer.logger.info("Community routes installed: /community, /api/community/metrics")
+    viewer.run(host=args.host, port=args.port, debug=args.debug)
+
+
+if __name__ == "__main__":
+    main()
