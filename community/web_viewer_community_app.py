@@ -22,6 +22,9 @@ ROOT = Path(__file__).resolve().parent.parent
 SUBMODULE_PATH = ROOT / "meshcore-bot"
 if str(SUBMODULE_PATH) not in sys.path:
     sys.path.insert(0, str(SUBMODULE_PATH))
+COMMUNITY_PATH = ROOT / "community"
+if str(COMMUNITY_PATH) not in sys.path:
+    sys.path.insert(0, str(COMMUNITY_PATH))
 
 from modules.web_viewer.app import BotDataViewer  # noqa: E402
 
@@ -225,13 +228,13 @@ setInterval(refresh, 5000);
 # SCORE_RE = re.compile(r"\\bscore=([0-9]*\\.?[0-9]+)")
 
 
-def _safe_float(val):
-    try:
-        if val is None:
-            return None
-        return float(val)
-    except (TypeError, ValueError):
-        return None
+# def _safe_float(val):
+#     try:
+#         if val is None:
+#             return None
+#         return float(val)
+#     except (TypeError, ValueError):
+#         return None
 
 
 # def _extract_score(summary: str):
@@ -305,6 +308,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
 def _community_metrics_impl(viewer):
     import re
+    from community.config import ScoringConfig
+    scoring_cfg = ScoringConfig()
+    
     now = time.time()
     # Calculate local timezone offset in seconds
     # now_dt = datetime.datetime.now()
@@ -383,8 +389,7 @@ def _community_metrics_impl(viewer):
           rows = cur.fetchall()
           max_fan_in     = max(int(rows[0]["max_fan_in"] or 1), 1) if rows else 1
           log_max_fan    = math.log1p(max_fan_in)
-          from community.config import ScoringConfig
-          scoring_cfg = ScoringConfig()
+          
           for r in rows:
             fan_in      = int(r["fan_in"] or 0)
             out_hops    = r["out_hops"]
