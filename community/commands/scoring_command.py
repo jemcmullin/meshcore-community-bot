@@ -19,12 +19,31 @@ class ScoringCommand(BaseCommand):
             def load_metrics():
                 infra_rows = self.bot.db_manager.execute_query(
                     """SELECT mc.to_prefix,
-                              COUNT(DISTINCT mc.from_prefix) AS fan_in,
-                              CAST((julianday('now') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours
-                       FROM mesh_connections mc
-                       GROUP BY mc.to_prefix
-                       ORDER BY fan_in DESC
-                       LIMIT 8"""
+                            COUNT(DISTINCT mc.from_prefix) AS fan_in,
+                            CAST((julianday('now') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
+                            (SELECT MAX(c)
+                            FROM (SELECT COUNT(DISTINCT from_prefix) AS c
+                                FROM mesh_connections
+                                GROUP BY to_prefix)) AS max_fan_in,
+                            cct.out_hops,
+                            cct2.name
+                        FROM mesh_connections mc
+                        LEFT JOIN (
+                        SELECT LOWER(SUBSTR(public_key, 1, 2)) AS pfx,
+                            MAX(hop_count) AS out_hops
+                        FROM complete_contact_tracking
+                        WHERE out_path_len IS NOT NULL
+                        GROUP BY pfx
+                        ) AS cct ON cct.pfx = mc.to_prefix
+                        LEFT JOIN (
+                        SELECT LOWER(SUBSTR(public_key, 1, 2)) AS prefix, MAX(name) AS name
+                        FROM complete_contact_tracking
+                        WHERE name IS NOT NULL AND name != ''
+                        GROUP BY prefix
+                        ) AS cct2 ON cct2.prefix = mc.to_prefix
+                        GROUP BY mc.to_prefix
+                        ORDER BY fan_in DESC
+                        LIMIT 8"""
                 )
 
                 return infra_rows
@@ -39,9 +58,9 @@ class ScoringCommand(BaseCommand):
             stale_nodes = 0
             for row in infra_rows:
                 node = (row.get("to_prefix") or "").upper().replace("!", "")[:4]
-                fan_in = int(row.get("fan_in") or 0)
+                fan_in = int(row.get("fan_in") or 0) #links
                 age_hours = float(row.get("age_hours") or 999)
-                hops = row.get("hops")
+                hops = row.get("out_hops")
                 if age_hours > 48:
                     stale_nodes += 1
                 top_nodes.append((node, fan_in, hops))
