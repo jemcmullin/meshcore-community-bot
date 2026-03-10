@@ -307,8 +307,8 @@ def _community_metrics_impl(viewer):
     import datetime
     now = time.time()
     # Calculate local timezone offset in seconds
-    now_dt = datetime.datetime.now()
-    now_utc = datetime.datetime.utcnow()
+    # now_dt = datetime.datetime.now()
+    # now_utc = datetime.datetime.utcnow()
     # tz_offset_sec = int((now_dt - now_utc).total_seconds())
     top_repeaters = []
     stage_counts = {"bid": 0, "assigned_us": 0, "assigned_other": 0, "fallback": 0}
@@ -348,7 +348,7 @@ def _community_metrics_impl(viewer):
             f"""
             SELECT mc.to_prefix,
                  COUNT(DISTINCT mc.from_prefix) AS fan_in,
-                 CAST((julianday('now') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
+                 CAST((julianday('now', 'localtime') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
                  (SELECT MAX(c)
                 FROM (SELECT COUNT(DISTINCT from_prefix) AS c
                     FROM mesh_connections

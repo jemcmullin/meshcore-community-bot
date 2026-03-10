@@ -20,7 +20,7 @@ class ScoringCommand(BaseCommand):
                 infra_rows = self.bot.db_manager.execute_query(
                     """SELECT mc.to_prefix,
                             COUNT(DISTINCT mc.from_prefix) AS fan_in,
-                            CAST((julianday('now') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
+                            CAST((julianday('now', 'localtime') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
                             (SELECT MAX(c)
                             FROM (SELECT COUNT(DISTINCT from_prefix) AS c
                                 FROM mesh_connections

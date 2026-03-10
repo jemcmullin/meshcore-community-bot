@@ -369,7 +369,7 @@ class MessageInterceptor:
                     path_bonus = 1.0 if exact_rows else 0.0
 
                 rows = await self.bot.db_manager.aexecute_query(
-                    """SELECT CAST((julianday('now') - julianday(last_seen)) * 24 AS REAL)
+                    """SELECT CAST((julianday('now', 'localtime') - julianday(last_seen)) * 24 AS REAL)
                        FROM observed_paths
                                              WHERE LOWER(from_prefix) = ?
                          AND packet_type = 'message'
