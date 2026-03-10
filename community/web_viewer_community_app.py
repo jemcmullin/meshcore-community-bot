@@ -303,7 +303,12 @@ document.addEventListener('DOMContentLoaded', function () {
 
 
 def _community_metrics_impl(viewer):
+    import datetime
     now = time.time()
+    # Calculate local timezone offset in seconds
+    now_dt = datetime.datetime.now()
+    now_utc = datetime.datetime.utcnow()
+    tz_offset_sec = int((now_dt - now_utc).total_seconds())
     top_repeaters = []
     stage_counts = {"bid": 0, "assigned_us": 0, "assigned_other": 0, "fallback": 0}
     recent_events = []
@@ -403,47 +408,50 @@ def _community_metrics_impl(viewer):
 
         # Last 60 minutes of coordination snapshots injected by community layer
         if "packet_stream" in tables:
-            cutoff = now - (60 * 60)
-            cur.execute(
-                """
-                SELECT timestamp, data
-                FROM packet_stream
-                WHERE type = 'command' AND timestamp >= ?
-                ORDER BY timestamp DESC
-                LIMIT 500
-                """,
-                (cutoff,),
+          # Adjust cutoff for local time
+          cutoff = now - (24 * 60 * 60) + tz_offset_sec
+          cur.execute(
+            """
+            SELECT timestamp, data
+            FROM packet_stream
+            WHERE type = 'command' AND timestamp >= ?
+            ORDER BY timestamp DESC
+            LIMIT 500
+            """,
+            (cutoff,),
+          )
+          for r in cur.fetchall():
+            try:
+              payload = json.loads(r["data"])
+            except (TypeError, ValueError, json.JSONDecodeError):
+              continue
+
+            cmd = (payload.get("command") or "").strip()
+            if not cmd.startswith("coord_"):
+              continue
+
+            stage = cmd.replace("coord_", "", 1)
+            if stage not in stage_counts:
+              stage_counts[stage] = 0
+            stage_counts[stage] += 1
+            event_count += 1
+
+            summary = payload.get("response") or ""
+            ev_score = _extract_score(summary)
+            # Adjust event timestamp for frontend display
+            recent_events.append(
+              {
+                "timestamp": float(r["timestamp"]) - tz_offset_sec,
+                "stage": stage,
+                "score": ev_score,
+                "summary": summary,
+              }
             )
-            for r in cur.fetchall():
-                try:
-                    payload = json.loads(r["data"])
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    continue
-
-                cmd = (payload.get("command") or "").strip()
-                if not cmd.startswith("coord_"):
-                    continue
-
-                stage = cmd.replace("coord_", "", 1)
-                if stage not in stage_counts:
-                    stage_counts[stage] = 0
-                stage_counts[stage] += 1
-                event_count += 1
-
-                summary = payload.get("response") or ""
-                ev_score = _extract_score(summary)
-                recent_events.append(
-                    {
-                        "timestamp": float(r["timestamp"]),
-                        "stage": stage,
-                        "score": ev_score,
-                        "summary": summary,
-                    }
-                )
 
         # DM statistics (last 60 minutes) - track sent DMs and ACK delivery confirmation
         if "packet_stream" in tables:
-            cutoff = now - (60 * 60)
+          # Adjust cutoff for local time
+          cutoff = now - (24 * 60 * 60) + tz_offset_sec
             
             # Query 'command' entries for DM transmissions with ACK tracking
             cur.execute(
