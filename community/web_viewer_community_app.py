@@ -204,7 +204,7 @@ async function refresh() {
     document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => `
       <tr>
         <!-- Timestamp is already local time from the database, so display as-is without timezone conversion -->
-        <td>${new Date(e.timestamp * 1000).toLocaleTimeString('en-US', { hour12: true, timeZone: 'UTC' })}</td>
+        <td>${new Date(e.timestamp * 1000).toLocaleTimeString('en-US', { hour12: true })}</td>
         <td class=\"mono\">${e.stage}</td>
         <td>${e.score === null ? 'n/a' : e.score.toFixed(3)}</td>
         <td class=\"mono\">${e.summary}</td>
@@ -309,7 +309,7 @@ def _community_metrics_impl(viewer):
     # Calculate local timezone offset in seconds
     now_dt = datetime.datetime.now()
     now_utc = datetime.datetime.utcnow()
-    tz_offset_sec = int((now_dt - now_utc).total_seconds())
+    # tz_offset_sec = int((now_dt - now_utc).total_seconds())
     top_repeaters = []
     stage_counts = {"bid": 0, "assigned_us": 0, "assigned_other": 0, "fallback": 0}
     recent_events = []
@@ -341,14 +341,14 @@ def _community_metrics_impl(viewer):
         if "mesh_connections" in tables and "complete_contact_tracking" in tables:
           # Calculate local timezone offset in hours
           import datetime
-          now_dt = datetime.datetime.now()
-          now_utc = datetime.datetime.utcnow()
-          tz_offset_hours = (now_dt - now_utc).total_seconds() / 3600.0
+          # now_dt = datetime.datetime.now()
+          # now_utc = datetime.datetime.utcnow()
+          # tz_offset_hours = (now_dt - now_utc).total_seconds() / 3600.0
           cur.execute(
             f"""
             SELECT mc.to_prefix,
                  COUNT(DISTINCT mc.from_prefix) AS fan_in,
-                 CAST((julianday('now') - julianday(MAX(mc.last_seen))) * 24 - {tz_offset_hours:.2f} AS REAL) AS age_hours,
+                 CAST((julianday('now') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
                  (SELECT MAX(c)
                 FROM (SELECT COUNT(DISTINCT from_prefix) AS c
                     FROM mesh_connections
@@ -409,8 +409,8 @@ def _community_metrics_impl(viewer):
 
         # Last 24 hrs of coordination snapshots injected by community layer
         if "packet_stream" in tables:
-          # Adjust cutoff for local time
-          cutoff = now - (24 * 60 * 60) + tz_offset_sec
+          # Cutoff for last 24 hours; tz_offset not needed since DB timestamps are local time
+          cutoff = now - (24 * 60 * 60)
           cur.execute(
             """
             SELECT timestamp, data
@@ -442,7 +442,7 @@ def _community_metrics_impl(viewer):
             # Adjust event timestamp for frontend display
             recent_events.append(
               {
-                "timestamp": float(r["timestamp"]) - tz_offset_sec,
+                "timestamp": float(r["timestamp"]), # - tz_offset_sec,
                 "stage": stage,
                 "score": ev_score,
                 "summary": summary,
@@ -451,8 +451,8 @@ def _community_metrics_impl(viewer):
 
         # DM statistics (last 24 hrs) - track sent DMs and ACK delivery confirmation
         if "packet_stream" in tables:
-          # Adjust cutoff for local time
-            cutoff = now - (24 * 60 * 60) + tz_offset_sec
+            # Cutoff for last 24 hours; tz_offset not needed since DB timestamps are local time
+            cutoff = now - (24 * 60 * 60)
             
             # Query 'command' entries for DM transmissions with ACK tracking
             cur.execute(
