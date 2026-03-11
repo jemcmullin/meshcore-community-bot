@@ -91,7 +91,7 @@ class CoordinatorClient:
     ) -> bool:
         """Register this bot with the coordinator."""
         if not self.is_configured:
-            logger.info("No coordinator URL configured, running standalone")
+            logger.warning("No coordinator URL configured, running standalone")
             return False
 
         payload = {
@@ -193,6 +193,7 @@ class CoordinatorClient:
             True if should respond, False if should not, None if coordinator unreachable.
         """
         if not self.is_registered:
+            logger.debug("Bot not registered, cannot ask coordinator if should respond")
             return None
 
         payload = {
@@ -216,6 +217,7 @@ class CoordinatorClient:
         if delivery_score is not None:
             payload["delivery_score"] = delivery_score
 
+        logger.debug('POSTing to coordinator /should-respond')
         try:
             resp = await self._client.post(
                 "/api/v1/coordination/should-respond",

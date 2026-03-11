@@ -41,6 +41,10 @@ class CommunityBot(MeshCoreBot):
 
         # Apply the same colored formatter to all community.* loggers
         self._setup_community_logging()
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("CommunityBot initialized with debug logging enabled")
+            logging.getLogger("httpcore.http11").setLevel(logging.INFO)
+            logger.debug("Set httpcore.http11 log level to INFO to reduce noise. Go to /community/community_core.py to adjust this if needed.")
 
         # Load coordinator config
         self.coordinator_config = CoordinatorConfig.from_env_and_config(self.config)
