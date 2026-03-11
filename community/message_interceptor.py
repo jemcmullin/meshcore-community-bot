@@ -41,22 +41,31 @@ class MessageInterceptor:
         For DMs: send immediately (no coordination needed).
         For channel messages: check with coordinator first, passing signal data for the bidding window to evaluate path quality.
         """
-        logger.debug(f"--Intercepted send_response for message from {message.sender_id}")
+        logger.debug(f"[COORDINATOR] Intercepted send_response for message from {getattr(message, 'sender_id', None)}")
+        logger.debug(f"[COORDINATOR] Message fields: is_dm={getattr(message, 'is_dm', None)}, channel={getattr(message, 'channel', None)}, content={getattr(message, 'content', None)}, sender_pubkey={getattr(message, 'sender_pubkey', None)}, snr={getattr(message, 'snr', None)}, rssi={getattr(message, 'rssi', None)}, hops={getattr(message, 'hops', None)}, path={getattr(message, 'path', None)}")
+        # Try to extract command name for extra debug
+        try:
+            words = (getattr(message, 'content', '') or '').split()
+            command_name = words[0].lower() if words else ''
+            logger.debug(f"[COORDINATOR] Detected command_name: {command_name}")
+        except Exception as e:
+            logger.debug(f"[COORDINATOR] Could not extract command_name: {e}")
+            
         # DMs always go through - only this bot received the DM
         if message.is_dm:
-            logger.debug("--Message is a DM, bypassing coordinator")
+            logger.debug("[COORDINATOR] Message is a DM, bypassing coordinator")
             result = await self._original_send_response(message, content, **kwargs)
             await self._report_message(message, bot_responded=result)
             return result
 
         # If coordinator is not configured, send immediately
         if not self.coordinator.is_configured:
-            logger.debug("--Coordinator not configured, sending without coordination")
+            logger.debug("[COORDINATOR] Coordinator not configured, sending without coordination")
             result = await self._original_send_response(message, content, **kwargs)
             await self._report_message(message, bot_responded=result)
             return result
 
-        logger.debug("--Message is a channel message, checking with coordinator before responding")
+        logger.debug("[COORDINATOR] Message is a channel message, checking with coordinator before responding")
         # Compute message hash for deduplication
         timestamp = message.timestamp or int(time.time())
         message_hash = CoordinatorClient.compute_message_hash(
@@ -74,6 +83,8 @@ class MessageInterceptor:
         words = (message.content or "").split()
         content_prefix = words[0][:50] if words else ""
 
+        logger.debug(f"[COORDINATOR] Calling should_respond with: message_hash={message_hash}, sender_pubkey={message.sender_pubkey}, channel={message.channel}, content_prefix={content_prefix}, is_dm=False, timestamp={timestamp}, snr={message.snr}, rssi={message.rssi}, hops={message.hops}, path={message.path}, delivery_score={delivery_score}")
+
         # Ask coordinator with signal data for path quality evaluation
         should_respond = await self.coordinator.should_respond(
             message_hash=message_hash,
@@ -88,6 +99,8 @@ class MessageInterceptor:
             receiver_path=message.path,
             delivery_score=delivery_score,  # Pass delivery score for informed bidding
         )
+
+        logger.debug(f"[COORDINATOR] should_respond result: {should_respond}")
 
         if should_respond is True:
             # Coordinator says we should respond
