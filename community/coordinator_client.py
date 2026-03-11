@@ -162,7 +162,7 @@ class CoordinatorClient:
             self.active_bots = data.get("active_bots", 0)
             self.heartbeat_interval = data.get("next_heartbeat_seconds", 30)
             self._last_score_update = time.time()
-
+            logger.info(f"Heartbeat successful: API_score={self.current_score:.3f}, active_bots={self.active_bots}, next={self.heartbeat_interval}s")
             return True
         except Exception as e:
             logger.debug(f"Heartbeat failed: {e}")

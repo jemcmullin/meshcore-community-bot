@@ -60,7 +60,7 @@ class MessageInterceptor:
                 should_send, message_hash = await self._coordinate_should_respond(message)
                 if not should_send:
                     # TODO: logging
-                    return False
+                    return True # Graceful silence to avoid error messages
             except LookupError:
                 pass
 
@@ -146,16 +146,16 @@ class MessageInterceptor:
 
         if should_respond is True:
             # Coordinator says we should respond
-            logger.info(f"Coordinator assigned response to us for: {content_prefix} (score={delivery_score:.3f})")
+            logger.info(f"Coordinator assigned response to us for: {content_prefix} (API_score={self.coordinator.current_score:.3f}) (delivery_score={delivery_score:.3f})")
             return True, message_hash
 
         if should_respond is False:
             # Coordinator assigned to another bot
-            logger.info(f"Coordinator assigned response to another bot for: {content_prefix} (score={delivery_score:.3f})")
+            logger.info(f"Coordinator assigned response to another bot for: {content_prefix} (API_score={self.coordinator.current_score:.3f}) (delivery_score={delivery_score:.3f})")
             return False, message_hash
 
         # should_respond is None - coordinator unreachable, use fallback
-        logger.info(f"Coordinator unreachable, using score-based fallback (score={delivery_score:.3f})")
+        logger.info(f"Coordinator unreachable, using score-based fallback (API_score={self.coordinator.current_score:.3f}) (delivery_score={delivery_score:.3f})")
         # Fallback: suppress if below min delivery score
         if delivery_score < self.bot.scoring_config.fallback_min_delivery_score:
             logger.info(f"Fallback: delivery score {delivery_score:.3f} below min {self.bot.scoring_config.fallback_min_delivery_score}, suppressing response")
