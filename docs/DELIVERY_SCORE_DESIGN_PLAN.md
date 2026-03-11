@@ -10,12 +10,14 @@ This document reflects the code to design in `community/`.
   - `community/message_interceptor.py`
   - `community/coordinator_client.py`
   - `community/coverage_fallback.py`
+  - `community/coordinator_scoring.py`
   - `community/config.py`
 - Some files may already exist if included from past attempts.
+- Existing API data should be maintained for backward compatibility and all optional fields provided where possible
 
 ## Live Scoring Model
 
-Delivery score is computed in `CoordinatorClient.compute_delivery_score()`:
+Delivery score is computed in `CoordinatorScoring.compute_delivery_score()`:
 
 ```python
 delivery_score = (
@@ -59,7 +61,7 @@ Not used for delivery scoring:
 
 ## Path Metrics
 
-Implemented in `MessageInterceptor._get_path_metrics()`:
+Implemented in `CoordinatorScoring.get_path_metrics()` called from `MessageInterceptor`:
 
 - Returns tuple `(hop_score, infrastructure, path_bonus, path_freshness)`.
 - Path nodes parsed from `message.path` via `parse_path_nodes()`.
@@ -105,6 +107,7 @@ In `MessageInterceptor._coordinated_send_response()`:
 In `CoverageFallback.compute_delay_ms_with_signal()`:
 
 - Compute per-message delivery score with the same formula/weights as coordinator bid.
+- Use `CoordinatorScoring` to compute delivery score for fallback as well.
 - If `delivery_score < fallback_min_delivery_score`, suppress response in fallback mode.
 - Convert delivery score directly to delay (`base_delay_ms`, `min_delay_ms`, `max_jitter_ms`).
 - No blending with coordinator coverage score — old coverage API will be removed.
