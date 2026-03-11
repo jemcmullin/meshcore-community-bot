@@ -1,5 +1,8 @@
 import math
+import logging
 from .config import ScoringConfig
+
+logger = logging.getLogger('CommunityBot')
 
 class CoordinatorScoring:
 	"""Implements delivery scoring and path metrics for coordination."""

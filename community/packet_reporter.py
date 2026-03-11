@@ -6,7 +6,7 @@ from typing import Optional
 
 from .coordinator_client import CoordinatorClient
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('CommunityBot')
 
 # Max items to retain on repeated failures to prevent unbounded growth
 MAX_RETAINED_ITEMS = 500

@@ -24,14 +24,13 @@ if _bot_path not in sys.path:
 from modules.commands.base_command import BaseCommand
 from modules.core import MeshCoreBot
 
-from .config import CoordinatorConfig
+from .config import CoordinatorConfig, ScoringConfig
 from .coordinator_client import CoordinatorClient
 from .coverage_fallback import CoverageFallback
 from .message_interceptor import MessageInterceptor
 from .packet_reporter import PacketReporter
 
-logger = logging.getLogger(__name__)
-
+logger = logging.getLogger('CommunityBot')
 
 class CommunityBot(MeshCoreBot):
     """MeshCoreBot extended with multi-bot coordination."""
@@ -40,8 +39,31 @@ class CommunityBot(MeshCoreBot):
         # Initialize the base bot
         super().__init__(config_file)
 
+        # Apply the same colored formatter to all community.* loggers
+        self._setup_community_logging()
+
         # Load coordinator config
         self.coordinator_config = CoordinatorConfig.from_env_and_config(self.config)
+        self.logger.info('Coordinator config loaded')
+        self.logger.debug(
+            f"Coordinator config: url={self.coordinator_config.url}, "
+            f"heartbeat_interval={self.coordinator_config.heartbeat_interval}s, "
+            f"coordination_timeout={self.coordinator_config.coordination_timeout_ms}ms, "
+            f"batch_interval={self.coordinator_config.batch_interval_seconds}s, "
+            f"batch_max_size={self.coordinator_config.batch_max_size}, "
+            f"mesh_region={self.coordinator_config.mesh_region}"
+        )
+
+        # Load scoring config
+        self.scoring_config = ScoringConfig.from_env_and_config(self.config)
+        self.logger.info('Scoring config loaded')
+        self.logger.debug(
+            "Scoring weights loaded: infra=%.2f hops=%.2f path_bonus=%.2f freshness=%.2f",
+            self.scoring_config.infrastructure_weight,
+            self.scoring_config.hop_weight,
+            self.scoring_config.path_bonus_weight,
+            self.scoring_config.freshness_weight,
+        )
 
         # Initialize coordinator client
         self.coordinator = CoordinatorClient(
@@ -77,6 +99,44 @@ class CommunityBot(MeshCoreBot):
         self._registered_with_real_key = False
 
         self.logger.info("Community bot initialized with coordinator support")
+    
+    def _setup_community_logging(self):
+        """Mirror all MeshCoreBot handlers onto the CommunityBot logger.
+
+        Copies every handler (console + file) so community log lines appear
+        in the same destinations — including the log file — as MeshCoreBot lines.
+        """
+        import colorlog
+
+        meshcore_logger = logging.getLogger("MeshCoreBot")
+        community_logger = logging.getLogger("CommunityBot")
+        community_logger.setLevel(meshcore_logger.level or logging.DEBUG)
+        community_logger.propagate = False
+
+        # Remove stale handlers from previous calls (e.g. hot-reload)
+        community_logger.handlers.clear()
+
+        if meshcore_logger.handlers:
+            # Reuse the exact same handler instances — they already have the
+            # right formatter and file path configured by MeshCoreBot.setup_logging()
+            for handler in meshcore_logger.handlers:
+                community_logger.addHandler(handler)
+        else:
+            # Fallback: MeshCoreBot not yet configured, add a plain colored console handler
+            formatter = colorlog.ColoredFormatter(
+                "%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+                log_colors={
+                    "DEBUG": "cyan",
+                    "INFO": "green",
+                    "WARNING": "yellow",
+                    "ERROR": "red",
+                    "CRITICAL": "red,bg_white",
+                },
+            )
+            handler = logging.StreamHandler()
+            handler.setFormatter(formatter)
+            community_logger.addHandler(handler)
 
     def _load_community_commands(self):
         """Load community-specific commands into the plugin system.

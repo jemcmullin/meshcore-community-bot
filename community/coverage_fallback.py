@@ -6,7 +6,7 @@ import random
 import time
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('CommunityBot')
 
 # Delay parameters
 BASE_DELAY_MS = 2000  # Maximum delay window

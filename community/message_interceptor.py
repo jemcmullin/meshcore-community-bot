@@ -12,7 +12,7 @@ import time
 from .coordinator_client import CoordinatorClient
 from .coverage_fallback import CoverageFallback
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('CommunityBot')
 
 
 class MessageInterceptor:
@@ -24,11 +24,9 @@ class MessageInterceptor:
         self.fallback = fallback
         self.reporter = reporter
 
-        # Scoring config and scoring engine
-        from .config import ScoringConfig
+        # Coordinator scoring
         from .coordinator_scoring import CoordinatorScoring
-        self.scoring_config = ScoringConfig.from_env_and_config(bot.config)
-        self.scoring_engine = CoordinatorScoring(self.scoring_config)
+        self.coordinator_scoring = CoordinatorScoring(bot.scoring_config)
 
         # Save reference to the original send_response
         self._original_send_response = bot.command_manager.send_response
@@ -43,18 +41,22 @@ class MessageInterceptor:
         For DMs: send immediately (no coordination needed).
         For channel messages: check with coordinator first, passing signal data for the bidding window to evaluate path quality.
         """
+        logger.debug(f"--Intercepted send_response for message from {message.sender_id}")
         # DMs always go through - only this bot received the DM
         if message.is_dm:
+            logger.debug("--Message is a DM, bypassing coordinator")
             result = await self._original_send_response(message, content, **kwargs)
             await self._report_message(message, bot_responded=result)
             return result
 
         # If coordinator is not configured, send immediately
         if not self.coordinator.is_configured:
+            logger.debug("--Coordinator not configured, sending without coordination")
             result = await self._original_send_response(message, content, **kwargs)
             await self._report_message(message, bot_responded=result)
             return result
 
+        logger.debug("--Message is a channel message, checking with coordinator before responding")
         # Compute message hash for deduplication
         timestamp = message.timestamp or int(time.time())
         message_hash = CoordinatorClient.compute_message_hash(
@@ -65,8 +67,8 @@ class MessageInterceptor:
 
         # Compute delivery score and path metrics
         db_manager = getattr(self.bot, 'db_manager', None)
-        hop_score, infrastructure, path_bonus, path_freshness = self.scoring_engine.get_path_metrics(message, db_manager)
-        delivery_score = self.scoring_engine.compute_delivery_score(infrastructure, hop_score, path_bonus, path_freshness)
+        hop_score, infrastructure, path_bonus, path_freshness = self.coordinator_scoring.get_path_metrics(message, db_manager)
+        delivery_score = self.coordinator_scoring.compute_delivery_score(infrastructure, hop_score, path_bonus, path_freshness)
 
         # Extract content prefix safely
         words = (message.content or "").split()
@@ -103,8 +105,8 @@ class MessageInterceptor:
         # should_respond is None - coordinator unreachable, use fallback
         logger.info(f"Coordinator unreachable, using score-based fallback (score={delivery_score:.3f})")
         # Fallback: suppress if below min delivery score
-        if delivery_score < self.scoring_config.fallback_min_delivery_score:
-            logger.info(f"Fallback: delivery score {delivery_score:.3f} below min {self.scoring_config.fallback_min_delivery_score}, suppressing response")
+        if delivery_score < self.bot.scoring_config.fallback_min_delivery_score:
+            logger.info(f"Fallback: delivery score {delivery_score:.3f} below min {self.bot.scoring_config.fallback_min_delivery_score}, suppressing response")
             await self._report_message(message, bot_responded=False, message_hash=message_hash)
             return True
         await self.fallback.wait_before_responding()
