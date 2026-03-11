@@ -11,6 +11,7 @@ This document reflects the code currently running in `community/`.
   - `community/coordinator_client.py`
   - `community/coverage_fallback.py`
   - `community/config.py`
+- Some files may already exist if included from past attempts.
 
 ## Live Scoring Model
 
@@ -60,9 +61,14 @@ Not used for delivery scoring:
 
 Implemented in `MessageInterceptor._get_path_metrics()`:
 
-- Returns tuple `(infrastructure, path_bonus, path_freshness)`.
+- Returns tuple `(hop_score, infrastructure, path_bonus, path_freshness)`.
 - Path nodes parsed from `message.path` via `parse_path_nodes()`.
 - `path_hex` for exact match is built from parsed nodes (`"".join(path_nodes).lower()`).
+
+Hop score:
+
+- If `message.hops` is known, compute `1 / (1 + hops)`.
+- If unknown, return neutral `0.5`.
 
 Infrastructure details:
 
@@ -102,7 +108,7 @@ In `CoverageFallback.compute_delay_ms_with_signal()`:
 - If `delivery_score < fallback_min_delivery_score`, suppress response in fallback mode.
 - Convert delivery score directly to delay (`base_delay_ms`, `min_delay_ms`, `max_jitter_ms`).
 - No blending with coordinator coverage score — old coverage API will be removed.
-- Higher delivery score = shorter delay, so best-path bot responds first.
+- Higher delivery score = shorter delay, so higher delivery potential bot responds first.
 
 ## Config Surface
 
@@ -120,7 +126,7 @@ In `CoverageFallback.compute_delay_ms_with_signal()`:
 - `degrade_target`
 - `degrade_window_seconds`
 
-## Future Improvement Option: Bidirectional Bonus Scoring
+## Future Improvement Option (not initial implementation): Bidirectional Bonus Scoring
 
 **Overview:**
 Add a bidirectional bonus to the delivery scoring equation, rewarding bots whose path segments are confirmed bidirectional (i.e., both directions observed in mesh graph).

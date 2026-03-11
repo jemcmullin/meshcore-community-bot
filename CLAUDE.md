@@ -16,18 +16,13 @@ MeshCore Community Bot - Extended MeshCore mesh radio bot with multi-bot coordin
 
 `meshcore-bot/` is a git submodule tracking upstream. The strong preference is **never modify files inside `meshcore-bot/`**. Instead:
 
-1. **Patch via community layer** — monkey-patch methods at runtime from `community/` code (e.g. `MessageInterceptor` patches `process_message` and `send_response` using `types.MethodType`).
+1. **Patch via community layer** — monkey-patch methods at runtime from `community/` code (e.g. `MessageInterceptor` patches `send_response` using `types.MethodType`).
 2. **If a submodule change is unavoidable**, record it in `MESHCORE-BOT-PATCHES/` as a numbered `.patch` file (format: `NNN-short-description.patch`) so it can be re-applied after submodule updates.
 3. **DB tables** — Community code uses **only existing submodule tables** (`complete_contact_tracking`, `observed_paths`, `mesh_connections`). No community tables are created.
 
 ## Key Integration Point
 
-`MessageInterceptor` patches two methods on the bot via `types.MethodType`:
-
-**`MessageHandler.process_message()`** (messages_processed counter):
-
-1. Increments `messages_processed_count` on the bot
-2. Runs original handler unchanged
+`MessageInterceptor` patches one method on the bot via `types.MethodType`:
 
 **`CommandManager.send_response()`** (coordination gate + delivery scoring):
 
@@ -52,7 +47,7 @@ community_bot.py                    # Entry point
 community/
 ├── community_core.py              # CommunityBot extends MeshCoreBot
 ├── coordinator_client.py          # httpx client for coordinator API (lazy AsyncClient init)
-├── message_interceptor.py         # Patches process_message + send_response via MethodType; queries DB for delivery scoring
+├── message_interceptor.py         # Patches send_response via MethodType; queries DB for delivery scoring
 ├── packet_reporter.py             # Background batch reporter
 ├── coverage_fallback.py           # Delivery-score-aware delay when coordinator down
 ├── config.py                      # CoordinatorConfig + ScoringConfig from env/ini
@@ -60,9 +55,7 @@ community/
 └── commands/
     ├── coverage_command.py        # "coverage" - show bot's score
     ├── botstatus_command.py       # "botstatus" - coordinator status
-    └── scoring_command.py         # "scoring" - top repeaters by infrastructure score
-MESHCORE-BOT-PATCHES/              # Tracked patches for submodule (apply after updates)
-└── README.md                      # Patch naming convention: NNN-short-description.patch
+    └── scoring_command.py         # "scoring" - top repeaters to this bot by simulated bid score
 meshcore-bot/                      # Git submodule — DO NOT MODIFY DIRECTLY
 ├── modules/
 │   ├── core.py                   # MeshCoreBot - main bot class
