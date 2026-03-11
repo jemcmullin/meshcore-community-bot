@@ -48,9 +48,9 @@ class CommunityBot(MeshCoreBot):
         # add community-only pages/APIs without touching the submodule.
         patch_web_viewer_integration(self)
 
-        # Metrics counters (must be set before MessageInterceptor is created)
-        self.messages_processed_count: int = 0
-        self.messages_responded_count: int = 0
+        # # Metrics counters (must be set before MessageInterceptor is created)
+        # self.messages_processed_count: int = 0
+        # self.messages_responded_count: int = 0
 
         # Load coordinator config
         self.coordinator_config = CoordinatorConfig.from_env_and_config(self.config)

@@ -32,9 +32,10 @@ class MessageInterceptor:
         self.fallback = fallback
         self.reporter = reporter
 
-        # --- Patch send_response ---
+        # Save reference to the original send_response
         self._original_send_response = bot.command_manager.send_response
 
+        # Patch the command manager's send_response
         async def _bound_send_response(cm_self, message, content: str, **kwargs):
             logger.info(f"Bound send_response called for message [{(message.content or '')[:50]}] from {message.sender_id or 'unknown'}")
             return await self._coordinated_send_response(message, content, **kwargs)
@@ -43,42 +44,48 @@ class MessageInterceptor:
             _bound_send_response, bot.command_manager
         )
 
-        # --- Patch process_message (messages_processed_count counter) ---
-        self._original_process_message = None
-        if hasattr(bot, "message_handler"):
-            self._original_process_message = bot.message_handler.process_message
+        # # --- Patch process_message (messages_processed_count counter) ---
+        # self._original_process_message = None
+        # if hasattr(bot, "message_handler"):
+        #     self._original_process_message = bot.message_handler.process_message
 
-            async def _bound_process_message(mh_self, message):
-                logger.info(f"Bound process_message called for message [{(message.content or '')[:50]}] from {message.sender_id or 'unknown'}")
-                return await self._observing_process_message(message)
+        #     async def _bound_process_message(mh_self, message):
+        #         logger.info(f"Bound process_message called for message [{(message.content or '')[:50]}] from {message.sender_id or 'unknown'}")
+        #         return await self._observing_process_message(message)
 
-            bot.message_handler.process_message = MethodType(
-                _bound_process_message, bot.message_handler
-            )
-            logger.info("Message interceptor installed on MessageHandler.process_message")
+        #     bot.message_handler.process_message = MethodType(
+        #         _bound_process_message, bot.message_handler
+        #     )
+        #     logger.info("Message interceptor installed on MessageHandler.process_message")
 
         logger.info("Message interceptor installed on CommandManager.send_response")
 
-    # ------------------------------------------------------------------
-    # process_message patch — messages_processed_count counter
-    # ------------------------------------------------------------------
+    # # ------------------------------------------------------------------
+    # # process_message patch — messages_processed_count counter
+    # # ------------------------------------------------------------------
 
-    async def _observing_process_message(self, message):
-        """Increment messages_processed_count, then run the original."""
-        assert self._original_process_message is not None
-        if hasattr(self.bot, "messages_processed_count"):
-            self.bot.messages_processed_count += 1
+    # async def _observing_process_message(self, message):
+    #     """Increment messages_processed_count, then run the original."""
+    #     assert self._original_process_message is not None
+    #     if hasattr(self.bot, "messages_processed_count"):
+    #         self.bot.messages_processed_count += 1
 
-        return await self._original_process_message(message)
+    #     return await self._original_process_message(message)
 
     # ------------------------------------------------------------------
     # send_response patch — coordinator bidding + reporting
     # ------------------------------------------------------------------
 
     async def _coordinated_send_response(self, message, content: str, **kwargs) -> bool:
-        """Gate send_response through the coordinator bidding window."""
+        """Coordinated version of send_response.
+
+        For DMs: send immediately (no coordination needed).
+        For channel messages: check with coordinator first, passing metrics
+        for the bidding window to evaluate path quality.
+        """
+        #TODO: remove after troubleshooting
         logger.info(f"Intercepted send_response for message [{(message.content or '')[:50]}] from {message.sender_id or 'unknown'}")
-        # DMs always go through
+        # DMs always go through - only this bot received the DM
         if message.is_dm:
             result = await self._original_send_response(message, content, **kwargs)
             await self._report_message(message, bot_responded=result)
@@ -120,12 +127,15 @@ class MessageInterceptor:
             await self._report_message(message, bot_responded=result)
             return result
 
+        # Compute message hash for deduplication
         timestamp = message.timestamp or int(time.time())
         message_hash = CoordinatorClient.compute_message_hash(
             sender_pubkey=message.sender_pubkey or "",
             content=message.content or "",
             timestamp=timestamp,
         )
+
+        # Extract content prefix safely
         words = (message.content or "").split()
         content_prefix = words[0][:50] if words else ""
 
@@ -209,6 +219,9 @@ class MessageInterceptor:
             content_prefix=content_prefix,
             is_dm=False,
             timestamp=timestamp,
+            receiver_snr=message.snr,
+            receiver_rssi=message.rssi,
+            receiver_path=message.path,
             receiver_hops=message.hops,
             infrastructure=infrastructure,
             path_bonus=path_bonus,
@@ -232,8 +245,8 @@ class MessageInterceptor:
                 freshness_component=freshness_component,
             )
             result = await self._original_send_response(message, content, **kwargs)
-            if hasattr(self.bot, "messages_responded_count"):
-                self.bot.messages_responded_count += 1
+            # if hasattr(self.bot, "messages_responded_count"):
+            #     self.bot.messages_responded_count += 1
             await self._report_message(message, bot_responded=result, message_hash=message_hash)
             return result
 
@@ -294,8 +307,8 @@ class MessageInterceptor:
             path_freshness=path_freshness,
         )
         result = await self._original_send_response(message, content, **kwargs)
-        if hasattr(self.bot, "messages_responded_count"):
-            self.bot.messages_responded_count += 1
+        # if hasattr(self.bot, "messages_responded_count"):
+        #     self.bot.messages_responded_count += 1
         await self._report_message(message, bot_responded=result, message_hash=message_hash)
         return result
 
@@ -415,6 +428,8 @@ class MessageInterceptor:
                     content=message.content or "",
                     timestamp=timestamp,
                 )
+
+            # Detect if this was a command
             words = (message.content or "").split()
             content_prefix = words[0].lower() if words else ""
             was_command = bool(content_prefix)
@@ -552,6 +567,6 @@ class MessageInterceptor:
     def restore(self):
         """Restore all patched methods to their originals."""
         self.bot.command_manager.send_response = self._original_send_response
-        if self._original_process_message is not None and hasattr(self.bot, "message_handler"):
-            self.bot.message_handler.process_message = self._original_process_message
+        # if self._original_process_message is not None and hasattr(self.bot, "message_handler"):
+        #     self.bot.message_handler.process_message = self._original_process_message
         logger.info("Message interceptor removed")
