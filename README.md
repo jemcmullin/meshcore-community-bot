@@ -42,7 +42,10 @@ The bot computes a delivery score for each channel message using:
 ## Requirements
 
 - Docker & Docker Compose
-- `make` — on Debian/Ubuntu: `sudo apt-get install -y make`
+  <<<<<<< HEAD
+- # `make` — on Debian/Ubuntu: `sudo apt-get install -y make`
+- make — on Debian/Ubuntu: sudo apt-get install -y make (or use Docker Compose and git submodule commands directly)
+  > > > > > > > d7e8695 (makefile and requirements install from lessons learned)
 - MeshCore-compatible radio (Heltec V3, RAK Wireless, etc.)
 - USB cable, BLE, or TCP connection to the radio
 
@@ -89,7 +92,7 @@ cp config.ini.example config.ini
 ### 4. Start the bot
 
 ```bash
-make deploy
+make up
 ```
 
 This builds and starts the bot, immediately tails the logs. Ctrl+C stops the log tail but leaves the bot running.
@@ -161,7 +164,7 @@ All commands from meshcore-bot are available, plus:
 
 ## Updating
 
-Pull the latest changes and rebuild:
+Update to the latest version and redeploy:
 
 ```bash
 make redeploy
@@ -274,6 +277,7 @@ Images are published at: `ghcr.io/cj-vana/meshcore-community-bot`
 ```bash
 git clone https://github.com/cj-vana/meshcore-community-bot.git
 cd meshcore-community-bot
+make submodule
 pip install -r requirements.txt
 python3 community_bot.py
 ```
