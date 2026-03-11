@@ -24,7 +24,19 @@ Everything from [meshcore-bot](https://github.com/cj-vana/meshcore-bot), plus:
 - **Path-Based Scoring** - Delivery score reflects infrastructure, hops, path familiarity, and freshness
 - **Automatic Fallback** - Works standalone if coordinator is unreachable
 - **Network Reporting** - Messages/packets are reported for network-wide analytics
-- **New Commands** - `coverage` (show your score) and `botstatus` (coordinator status)
+- **New Commands** - `coverage` (show your score), `botstatus` (coordinator status), and `scoring` (top repeaters for use to this bot)
+
+## Delivery Scoring Overview
+
+The bot computes a delivery score for each channel message using:
+
+- Infrastructure fan-in (mesh_connections)
+- Hop count (message.hops)
+- Exact path familiarity (observed_paths)
+- Path freshness (recency decay)
+  Weights and fallback behavior are configurable in [Scoring] section and env vars.
+  If coordinator is unreachable, bots use delivery-score-based delay and suppress responses below minimum score.
+  See docs/DELIVERY_SCORE_DESIGN_PLAN.md for full details.
 
 ## Requirements
 

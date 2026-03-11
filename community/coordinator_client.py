@@ -180,11 +180,14 @@ class CoordinatorClient:
         receiver_rssi: Optional[int] = None,
         receiver_hops: Optional[int] = None,
         receiver_path: Optional[str] = None,
+        delivery_score: Optional[float] = None,
     ) -> Optional[bool]:
         """Ask coordinator if this bot should respond to a message.
 
         Includes signal data (SNR, RSSI, hops, path) for the coordinator's
         bidding window to evaluate path quality across competing bots.
+
+        Includes delivery_score for informed bidding based on potential to deliver response quality metrics.
 
         Returns:
             True if should respond, False if should not, None if coordinator unreachable.
@@ -210,6 +213,8 @@ class CoordinatorClient:
             payload["receiver_hops"] = receiver_hops
         if receiver_path is not None:
             payload["receiver_path"] = receiver_path
+        if delivery_score is not None:
+            payload["delivery_score"] = delivery_score
 
         try:
             resp = await self._client.post(

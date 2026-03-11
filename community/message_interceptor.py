@@ -24,6 +24,12 @@ class MessageInterceptor:
         self.fallback = fallback
         self.reporter = reporter
 
+        # Scoring config and scoring engine
+        from .config import ScoringConfig
+        from .coordinator_scoring import CoordinatorScoring
+        self.scoring_config = ScoringConfig.from_env_and_config(bot.config)
+        self.scoring_engine = CoordinatorScoring(self.scoring_config)
+
         # Save reference to the original send_response
         self._original_send_response = bot.command_manager.send_response
 
@@ -34,10 +40,8 @@ class MessageInterceptor:
 
     async def _coordinated_send_response(self, message, content: str, **kwargs) -> bool:
         """Coordinated version of send_response.
-
         For DMs: send immediately (no coordination needed).
-        For channel messages: check with coordinator first, passing signal data
-        for the bidding window to evaluate path quality.
+        For channel messages: check with coordinator first, passing signal data for the bidding window to evaluate path quality.
         """
         # DMs always go through - only this bot received the DM
         if message.is_dm:
@@ -59,6 +63,11 @@ class MessageInterceptor:
             timestamp=timestamp,
         )
 
+        # Compute delivery score and path metrics
+        db_manager = getattr(self.bot, 'db_manager', None)
+        hop_score, infrastructure, path_bonus, path_freshness = self.scoring_engine.get_path_metrics(message, db_manager)
+        delivery_score = self.scoring_engine.compute_delivery_score(infrastructure, hop_score, path_bonus, path_freshness)
+
         # Extract content prefix safely
         words = (message.content or "").split()
         content_prefix = words[0][:50] if words else ""
@@ -75,27 +84,72 @@ class MessageInterceptor:
             receiver_rssi=message.rssi,
             receiver_hops=message.hops,
             receiver_path=message.path,
+            delivery_score=delivery_score,  # Pass delivery score for informed bidding
         )
 
         if should_respond is True:
             # Coordinator says we should respond
-            logger.info(f"Coordinator assigned response to us for: {content_prefix}")
+            logger.info(f"Coordinator assigned response to us for: {content_prefix} (score={delivery_score:.3f})")
             result = await self._original_send_response(message, content, **kwargs)
             await self._report_message(message, bot_responded=result, message_hash=message_hash)
             return result
 
         if should_respond is False:
             # Coordinator assigned to another bot
-            logger.info(f"Coordinator assigned response to another bot for: {content_prefix}")
+            logger.info(f"Coordinator assigned response to another bot for: {content_prefix} (score={delivery_score:.3f})")
             await self._report_message(message, bot_responded=False, message_hash=message_hash)
             return True  # Return True so command doesn't report failure
 
         # should_respond is None - coordinator unreachable, use fallback
-        logger.info("Coordinator unreachable, using score-based fallback")
+        logger.info(f"Coordinator unreachable, using score-based fallback (score={delivery_score:.3f})")
+        # Fallback: suppress if below min delivery score
+        if delivery_score < self.scoring_config.fallback_min_delivery_score:
+            logger.info(f"Fallback: delivery score {delivery_score:.3f} below min {self.scoring_config.fallback_min_delivery_score}, suppressing response")
+            await self._report_message(message, bot_responded=False, message_hash=message_hash)
+            return True
         await self.fallback.wait_before_responding()
         result = await self._original_send_response(message, content, **kwargs)
         await self._report_message(message, bot_responded=result, message_hash=message_hash)
         return result
+
+        #TODO Remove old code after confirming new code works as intended
+        # # Extract content prefix safely
+        # words = (message.content or "").split()
+        # content_prefix = words[0][:50] if words else ""
+
+        # # Ask coordinator with signal data for path quality evaluation
+        # should_respond = await self.coordinator.should_respond(
+        #     message_hash=message_hash,
+        #     sender_pubkey=message.sender_pubkey or "",
+        #     channel=message.channel,
+        #     content_prefix=content_prefix,
+        #     is_dm=False,
+        #     timestamp=timestamp,
+        #     receiver_snr=message.snr,
+        #     receiver_rssi=message.rssi,
+        #     receiver_hops=message.hops,
+        #     receiver_path=message.path,
+        # )
+
+        # if should_respond is True:
+        #     # Coordinator says we should respond
+        #     logger.info(f"Coordinator assigned response to us for: {content_prefix}")
+        #     result = await self._original_send_response(message, content, **kwargs)
+        #     await self._report_message(message, bot_responded=result, message_hash=message_hash)
+        #     return result
+
+        # if should_respond is False:
+        #     # Coordinator assigned to another bot
+        #     logger.info(f"Coordinator assigned response to another bot for: {content_prefix}")
+        #     await self._report_message(message, bot_responded=False, message_hash=message_hash)
+        #     return True  # Return True so command doesn't report failure
+
+        # # should_respond is None - coordinator unreachable, use fallback
+        # logger.info("Coordinator unreachable, using score-based fallback")
+        # await self.fallback.wait_before_responding()
+        # result = await self._original_send_response(message, content, **kwargs)
+        # await self._report_message(message, bot_responded=result, message_hash=message_hash)
+        # return result
 
     async def _report_message(self, message, bot_responded: bool = False, message_hash: str = ""):
         """Report the message to the PacketReporter for batch ingestion."""
