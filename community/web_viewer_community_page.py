@@ -337,29 +337,35 @@ def _community_metrics_impl(viewer):
           cur.execute(
             f"""
             SELECT mc.to_prefix,
-                 COUNT(DISTINCT mc.from_prefix) AS fan_in,
-                 CAST((julianday('now', 'localtime') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
-                 (SELECT MAX(c)
-                FROM (SELECT COUNT(DISTINCT from_prefix) AS c
-                    FROM mesh_connections
-                    GROUP BY to_prefix)) AS max_fan_in,
-                 cct.out_hops,
-                 cct2.name
+                   COUNT(DISTINCT mc.from_prefix) AS fan_in,
+                   CAST((julianday('now', 'localtime') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
+                   (SELECT MAX(c)
+                    FROM (SELECT COUNT(DISTINCT from_prefix) AS c
+                          FROM mesh_connections
+                          GROUP BY to_prefix)) AS max_fan_in,
+                   cct.out_hops,
+                   cct2.name,
+                   cct2.device_type
             FROM mesh_connections mc
             LEFT JOIN (
-              SELECT LOWER(SUBSTR(public_key, 1, 2)) AS pfx,
-                 MAX(hop_count) AS out_hops
+              SELECT public_key,
+                     LOWER(SUBSTR(public_key, 1, 4)) AS pfx,
+                     MAX(hop_count) AS out_hops
               FROM complete_contact_tracking
               WHERE out_path_len IS NOT NULL
-              GROUP BY pfx
+              GROUP BY public_key
             ) AS cct ON cct.pfx = mc.to_prefix
             LEFT JOIN (
-              SELECT LOWER(SUBSTR(public_key, 1, 2)) AS prefix, MAX(name) AS name
+              SELECT public_key,
+                     LOWER(SUBSTR(public_key, 1, 4)) AS prefix,
+                     MAX(name) AS name,
+                     MAX(device_type) AS device_type
               FROM complete_contact_tracking
               WHERE name IS NOT NULL AND name != ''
-              GROUP BY prefix
+              GROUP BY public_key
             ) AS cct2 ON cct2.prefix = mc.to_prefix
-            GROUP BY mc.to_prefix
+            WHERE cct2.device_type = 'repeater'
+            GROUP BY cct2.public_key
             ORDER BY fan_in DESC
             LIMIT 50
             """
