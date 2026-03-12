@@ -6,7 +6,8 @@ This guide walks you through connecting your MeshCore radio to the Denver MeshCo
 
 - A MeshCore-compatible radio (Heltec V3, RAK Wireless, T-Beam, etc.)
 - A computer to run the bot (Raspberry Pi, VPS, desktop, etc.)
-- Docker installed ([Get Docker](https://docs.docker.com/get-docker/))
+- Docker & Docker Compose installed ([Get Docker](https://docs.docker.com/get-docker/))
+- `make` — on Debian/Ubuntu: `sudo apt-get install -y make`
 - A USB cable, BLE, or TCP connection to your radio
 
 ## Step 1: Get the Code
@@ -93,16 +94,17 @@ respond_to_dms = true
 ## Step 5: Start the Bot
 
 ```bash
-docker compose up -d
+make up
 ```
 
 Check the logs to make sure it's working:
 
 ```bash
-docker compose logs -f
+make logs
 ```
 
 You should see:
+
 ```
 [INFO] Starting MeshCore Community Bot...
 [INFO] Registered with coordinator as YourBotName
@@ -114,6 +116,7 @@ You should see:
 Send a DM to your bot from another MeshCore device with `ping` - you should get `Pong!` back.
 
 Check your bot is visible on the network:
+
 ```bash
 curl https://coordinator.denvermc.com/api/v1/bots
 ```
@@ -131,12 +134,13 @@ DISCORD_EMERGENCY_WEBHOOK_URL=https://discord.com/api/webhooks/your/emergency-we
 
 Some commands need API keys to work:
 
-| Key | Command | Get It From |
-|-----|---------|-------------|
-| `N2YO_API_KEY` | `satpass` | [n2yo.com](https://www.n2yo.com/api/) |
-| `AIRNOW_API_KEY` | `aqi` | [airnowapi.org](https://docs.airnowapi.org/) |
+| Key              | Command   | Get It From                                  |
+| ---------------- | --------- | -------------------------------------------- |
+| `N2YO_API_KEY`   | `satpass` | [n2yo.com](https://www.n2yo.com/api/)        |
+| `AIRNOW_API_KEY` | `aqi`     | [airnowapi.org](https://docs.airnowapi.org/) |
 
 Add them to `.env`:
+
 ```env
 N2YO_API_KEY=your-key-here
 AIRNOW_API_KEY=your-key-here
@@ -146,13 +150,13 @@ AIRNOW_API_KEY=your-key-here
 
 ```bash
 cd meshcore-community-bot
-git pull --recurse-submodules
-docker compose up -d --build
+make redeploy
 ```
 
 ## Checking Your Coverage Score
 
-From any MeshCore device, DM your bot with `coverage` to see your score, or `botstatus` for full network info.
+- On V1 API, use any MeshCore device, DM your bot with `coverage` to see your score, or `botstatus` for full network info.
+- On V2 API, use any MeshCore device, DM your bot with `scoring` to see a detailed breakdown of your primary surrounding repeater infrastructure (the highest weighted item)
 
 ## How Coordination Works
 
@@ -166,32 +170,46 @@ When multiple bots are on the same mesh:
 If the coordinator is unreachable, bots use a delay system - higher-scored bots respond faster.
 
 **Your coverage score** is based on:
-- How many nodes your radio can hear (35%)
-- Signal quality / SNR (25%)
-- How long your bot has been online (20%)
-- Nodes that only your bot covers (20%)
 
-The more you run your bot and the better your radio placement, the higher your score.
+**Delivery scoring** as a weighted blend of four components:
+
+- Infrastructure quality (connectedness along inbound path): **40%**
+- Hop count (shorter paths preferred): **35%**
+- Exact path familiarity bonus: **15%**
+- Path freshness (recency of sender observation): **10%**
+
+Details:
+
+- Infrastructure is based on how many nodes your radio can hear, SNR/RSSI for direct, or harmonic mean of connectedness for relayed paths.
+- Hop score rewards shorter paths: $\text{hop\_score} = 1 / (1 + \text{hops})$
+- Path bonus is 1.0 if your bot has seen the exact sender+path before, else 0.0.
+- Freshness decays with time since last sender observation: $\exp(-\text{age\_hours} / 24)$
+
+The more you run your bot and the better your radio placement, the higher your delivery score and the more likely your bot is to win coordination bids.
 
 ## Troubleshooting
 
 ### "Serial device not found"
+
 - Check the USB cable is plugged in
 - Run `ls /dev/ttyUSB*` to find the correct device
 - Update `MESHCORE_SERIAL_PORT` in `.env`
 
 ### "Failed to connect to MeshCore node"
+
 - Make sure the radio is powered on and in Companion mode
 - Try unplugging and replugging the USB cable
 - Check the serial port isn't being used by another program
 
 ### "Coordinator registration failed"
+
 - This is OK - your bot still works in standalone mode
 - Check that `COORDINATOR_URL` is correct
 - The bot will retry automatically on the next heartbeat
 
 ### Bot isn't responding to messages
-- Check `docker compose logs -f` for errors
+
+- Check `make logs` (i.e.`docker compose logs -f`) for errors
 - Make sure the channel is in `monitor_channels` in config.ini
 - Check if you're rate-limited (default: 10 seconds between responses)
 

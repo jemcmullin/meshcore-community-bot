@@ -1,4 +1,4 @@
-.PHONY: build up down logs pull submodule start redeploy
+.PHONY: build up down logs pull submodule start deploy redeploy
 
 # Ensure submodule is initialized before any docker operation
 submodule:
@@ -20,5 +20,7 @@ start: up logs
 
 pull:
 	git pull
+
+deploy: build start
 
 redeploy: down pull build start
