@@ -293,6 +293,7 @@ def _community_metrics_impl(viewer):
     from community.config import ScoringConfig
     scoring_cfg = ScoringConfig()
     prefix_len = scoring_cfg.repeater_prefix_byte_setting
+    viewer.logger.info(f"[community_metrics] prefix_len={prefix_len}")
     
     now = time.time()
     # Calculate local timezone offset in seconds
@@ -335,6 +336,7 @@ def _community_metrics_impl(viewer):
         # Path bonus is message-specific, so repeater rows use 0.0.
         if "mesh_connections" in tables and "complete_contact_tracking" in tables:
           # Calculate local timezone offset in hours
+          
           cur.execute(
             f"""
             SELECT mc.to_prefix,
