@@ -293,7 +293,7 @@ def _community_metrics_impl(viewer):
     from community.config import ScoringConfig
     scoring_cfg = ScoringConfig()
     prefix_len = scoring_cfg.repeater_prefix_byte_setting
-    viewer.logger.info(f"[community_metrics] prefix_len={prefix_len}")
+    print(f"[community_metrics] prefix_len={prefix_len}")
     
     now = time.time()
     # Calculate local timezone offset in seconds
@@ -339,30 +339,30 @@ def _community_metrics_impl(viewer):
           
           cur.execute(
             f"""
-            SELECT mc.to_prefix,
-                 COUNT(DISTINCT mc.from_prefix) AS fan_in,
+            SELECT mc.to_public_key,
+                 COUNT(DISTINCT mc.from_public_key) AS fan_in,
                  CAST((julianday('now', 'localtime') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
                  (SELECT MAX(c)
-                FROM (SELECT COUNT(DISTINCT from_prefix) AS c
+                FROM (SELECT COUNT(DISTINCT from_public_key) AS c
                     FROM mesh_connections
-                    GROUP BY to_prefix)) AS max_fan_in,
+                    GROUP BY to_public_key)) AS max_fan_in,
                  cct.out_hops,
                  cct2.name
             FROM mesh_connections mc
             LEFT JOIN (
-              SELECT LOWER(SUBSTR(public_key, 1, {prefix_len})) AS pfx,
+              SELECT public_key,
                  MAX(hop_count) AS out_hops
               FROM complete_contact_tracking
               WHERE out_path_len IS NOT NULL
-              GROUP BY pfx
-            ) AS cct ON cct.pfx = mc.to_prefix
+              GROUP BY public_key
+            ) AS cct ON cct.public_key = mc.to_public_key
             LEFT JOIN (
-              SELECT LOWER(SUBSTR(public_key, 1, {prefix_len})) AS prefix, MAX(name) AS name
+              SELECT public_key, MAX(name) AS name
               FROM complete_contact_tracking
               WHERE name IS NOT NULL AND name != ''
-              GROUP BY prefix
-            ) AS cct2 ON cct2.prefix = mc.to_prefix
-            GROUP BY mc.to_prefix
+              GROUP BY public_key
+            ) AS cct2 ON cct2.public_key = mc.to_public_key
+            GROUP BY mc.to_public_key
             ORDER BY fan_in DESC
             LIMIT 50
             """
@@ -387,7 +387,7 @@ def _community_metrics_impl(viewer):
             )
             top_repeaters.append(
               {
-                "node": (r["to_prefix"] or "").upper().replace("!", "")[:4],
+                "node": (r["to_public_key"] or "").upper().replace("!", "")[:4],
                 "name": r["name"] if "name" in r.keys() else None,
                 "fan_in": fan_in,
                 "age_hours": round(age_hours, 1),
