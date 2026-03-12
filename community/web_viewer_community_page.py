@@ -354,7 +354,7 @@ def _community_metrics_impl(viewer):
                 MAX(hop_count) AS out_hops
               FROM complete_contact_tracking
               WHERE out_path_len IS NOT NULL
-              GROUP BY public_key
+              GROUP BY pfx
                  ) AS cct ON cct.pfx = mc.to_prefix
                  LEFT JOIN (
               SELECT public_key,
@@ -363,10 +363,10 @@ def _community_metrics_impl(viewer):
                 MAX(device_type) AS device_type
               FROM complete_contact_tracking
               WHERE name IS NOT NULL AND name != ''
-              GROUP BY public_key
+              GROUP BY prefix
                  ) AS cct2 ON cct2.prefix = mc.to_prefix
                  WHERE cct2.device_type = 'repeater'
-                 GROUP BY cct2.prefix
+                 GROUP BY mc.to_prefix
                  ORDER BY fan_in DESC
                  LIMIT 50
                  """

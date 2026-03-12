@@ -36,13 +36,13 @@ class ScoringCommand(BaseCommand):
                                MAX(hop_count) AS out_hops
                         FROM complete_contact_tracking
                         WHERE out_path_len IS NOT NULL
-                        GROUP BY public_key
+                        GROUP BY pfx
                     ) AS cct ON cct.pfx = mc.to_prefix
                     LEFT JOIN (
                         SELECT LOWER(SUBSTR(public_key, 1, {prefix_len})) AS prefix, MAX(name) AS name
                         FROM complete_contact_tracking
                         WHERE name IS NOT NULL AND name != ''
-                        GROUP BY public_key
+                        GROUP BY prefix
                     ) AS cct2 ON cct2.prefix = mc.to_prefix
                     GROUP BY mc.to_prefix
                     ORDER BY fan_in DESC
