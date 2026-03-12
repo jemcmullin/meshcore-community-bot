@@ -22,26 +22,26 @@ class ScoringCommand(BaseCommand):
                 return self.bot.db_manager.execute_query(
                     f"""
                     SELECT mc.to_prefix,
-                           COUNT(DISTINCT mc.from_prefix) AS fan_in,
-                           CAST((julianday('now', 'localtime') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
-                           (SELECT MAX(c)
+                        COUNT(DISTINCT mc.from_prefix) AS fan_in,
+                        CAST((julianday('now', 'localtime') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
+                        (SELECT MAX(c)
                             FROM (SELECT COUNT(DISTINCT from_prefix) AS c
-                                  FROM mesh_connections
-                                  GROUP BY to_prefix)) AS max_fan_in,
-                           cct.out_hops,
-                           cct2.name
+                                FROM mesh_connections
+                                GROUP BY to_prefix)) AS max_fan_in,
+                        cct.out_hops,
+                        cct2.name
                     FROM mesh_connections mc
                     LEFT JOIN (
                         SELECT LOWER(SUBSTR(public_key, 1, {prefix_len})) AS pfx,
-                               MAX(hop_count) AS out_hops
+                            MAX(hop_count) AS out_hops
                         FROM complete_contact_tracking
-                        WHERE out_path_len IS NOT NULL
+                        WHERE out_path_len IS NOT NULL AND role != 'companion'
                         GROUP BY pfx
                     ) AS cct ON cct.pfx = mc.to_prefix
                     LEFT JOIN (
                         SELECT LOWER(SUBSTR(public_key, 1, {prefix_len})) AS prefix, MAX(name) AS name
                         FROM complete_contact_tracking
-                        WHERE name IS NOT NULL AND name != ''
+                        WHERE name IS NOT NULL AND name != '' AND role != 'companion'
                         GROUP BY prefix
                     ) AS cct2 ON cct2.prefix = mc.to_prefix
                     GROUP BY mc.to_prefix
