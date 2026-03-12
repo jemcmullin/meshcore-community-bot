@@ -8,6 +8,7 @@ Inherits from MeshCoreBot and adds:
 """
 
 import asyncio
+import configparser
 import importlib
 import importlib.util
 import inspect
@@ -72,7 +73,10 @@ class CommunityBot(MeshCoreBot):
         )
 
         # Load scoring config
-        self.scoring_config = ScoringConfig.from_env_and_config(str(Path(__file__).parent / "scoring_config.ini"))
+        scoring_config_path = Path(__file__).parent / "scoring_config.ini"
+        scoring_config_object = configparser.ConfigParser()
+        scoring_config_object.read(scoring_config_path)
+        self.scoring_config = ScoringConfig.from_env_and_config(scoring_config_object)
         self.logger.info('Scoring config loaded')
         self.logger.debug(
             "Scoring weights loaded: infra=%.2f hops=%.2f path_bonus=%.2f freshness=%.2f",
