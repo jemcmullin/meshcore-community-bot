@@ -30,8 +30,8 @@ class CoordinatorScoring:
 		path_nodes = self.parse_path_nodes(path)
 		path_hex = ''.join(path_nodes).lower() if path_nodes else None
 
-		# Infrastructure: fan-in per node from mesh_connections
-		infrastructure = self.compute_infrastructure_score(path_nodes, db_manager)
+		# Infrastructure: fan-in per node from mesh_connections, direct path if hops==0
+		infrastructure = self.compute_infrastructure_score(path_nodes, db_manager, hops)
 
 		# Path bonus: exact sender+path match in observed_paths
 		sender_prefix = getattr(message, 'sender_prefix', None)
@@ -53,9 +53,16 @@ class CoordinatorScoring:
 			return 0.5
 		return 1 / (1 + hops)
 
-	def compute_infrastructure_score(self, path_nodes, db_manager):
+	def compute_infrastructure_score(self, path_nodes, db_manager, hops=None):
+		# Direct path: no hops, no infrastructure is best infrastructure
+		if hops is not None and hops == 0:
+			if path_nodes is not None and len(path_nodes) > 0:
+				logger.warning("Message has 0 hops but path nodes exist, possible incorrect infra score")
+			return 1.0
+		# Not direct but no path info, assume average infrastructure
 		if not path_nodes:
 			return 0.5
+		# Proceed to score infrastructure based on fan-in of nodes in path
 		scores = []
 		max_fan_in = 1
 		for node in path_nodes:
