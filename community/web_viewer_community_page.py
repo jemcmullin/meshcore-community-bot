@@ -351,13 +351,13 @@ def _community_metrics_impl(viewer):
               SELECT LOWER(SUBSTR(public_key, 1, {prefix_len})) AS pfx,
                  MAX(hop_count) AS out_hops
               FROM complete_contact_tracking
-              WHERE out_path_len IS NOT NULL AND role != 'companion'
+              WHERE out_path_len IS NOT NULL AND device_type != 'companion'
               GROUP BY pfx
             ) AS cct ON cct.pfx = mc.to_prefix
             LEFT JOIN (
               SELECT LOWER(SUBSTR(public_key, 1, {prefix_len})) AS prefix, MAX(name) AS name
               FROM complete_contact_tracking
-              WHERE name IS NOT NULL AND name != '' AND role != 'companion'
+              WHERE name IS NOT NULL AND name != '' AND device_type != 'companion'
               GROUP BY prefix
             ) AS cct2 ON cct2.prefix = mc.to_prefix
             GROUP BY mc.to_prefix
