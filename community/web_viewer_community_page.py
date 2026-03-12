@@ -339,7 +339,7 @@ def _community_metrics_impl(viewer):
           
           cur.execute(
             f"""
-            SELECT mc.to_public_key,
+            SELECT COALESCE(mc.to_public_key, mc.to_prefix) AS node,
                  COUNT(DISTINCT mc.from_public_key) AS fan_in,
                  CAST((julianday('now', 'localtime') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
                  (SELECT MAX(c)
@@ -362,7 +362,7 @@ def _community_metrics_impl(viewer):
               WHERE name IS NOT NULL AND name != ''
               GROUP BY public_key
             ) AS cct2 ON cct2.public_key = mc.to_public_key
-            GROUP BY mc.to_public_key
+            GROUP BY node
             ORDER BY fan_in DESC
             LIMIT 50
             """
