@@ -21,6 +21,7 @@ _bot_path = str(Path(__file__).parent.parent / "meshcore-bot")
 if _bot_path not in sys.path:
     sys.path.insert(0, _bot_path)
 
+from community.web_viewer_patch import patch_web_viewer_integration
 from modules.commands.base_command import BaseCommand
 from modules.core import MeshCoreBot
 
@@ -39,12 +40,24 @@ class CommunityBot(MeshCoreBot):
         # Initialize the base bot
         super().__init__(config_file)
 
+        # ------------------------------------------------------------------------
+        # Visibility (logging and web)
+        # ------------------------------------------------------------------------
+
         # Apply the same colored formatter to all community.* loggers
         self._setup_community_logging()
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("CommunityBot initialized with debug logging enabled")
             logging.getLogger("httpcore").setLevel(logging.INFO)
             logger.debug("Set httpcore log level to INFO to reduce noise. Go to /community/community_core.py to adjust this if needed.")
+
+        # Route web viewer subprocess through community wrapper so we can
+        # add community-only pages/APIs without touching the submodule.
+        patch_web_viewer_integration(self)
+
+        # ------------------------------------------------------------------------
+        # Config
+        # ------------------------------------------------------------------------
 
         # Load coordinator config
         self.coordinator_config = CoordinatorConfig.from_env_and_config(self.config)
@@ -68,6 +81,10 @@ class CommunityBot(MeshCoreBot):
             self.scoring_config.path_bonus_weight,
             self.scoring_config.freshness_weight,
         )
+
+        # ------------------------------------------------------------------------
+        # Community Bot Initialization
+        # ------------------------------------------------------------------------
 
         # Initialize coordinator client
         self.coordinator = CoordinatorClient(
