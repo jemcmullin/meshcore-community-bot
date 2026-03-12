@@ -13,10 +13,14 @@ class ScoringCommand(BaseCommand):
 
     async def execute(self, message: MeshMessage) -> bool:
         try:
+            from community.config import ScoringConfig
+            scoring_cfg = ScoringConfig()
+            prefix_len = scoring_cfg.repeater_prefix_byte_setting
+            
             def load_metrics():
                 # Query top infrastructure relays and basic bid-health metrics
                 return self.bot.db_manager.execute_query(
-                    """
+                    f"""
                     SELECT mc.to_prefix,
                            COUNT(DISTINCT mc.from_prefix) AS fan_in,
                            CAST((julianday('now', 'localtime') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
@@ -28,17 +32,17 @@ class ScoringCommand(BaseCommand):
                            cct2.name
                     FROM mesh_connections mc
                     LEFT JOIN (
-                        SELECT LOWER(SUBSTR(public_key, 1, 2)) AS pfx,
+                        SELECT LOWER(SUBSTR(public_key, 1, {prefix_len})) AS pfx,
                                MAX(hop_count) AS out_hops
                         FROM complete_contact_tracking
                         WHERE out_path_len IS NOT NULL
-                        GROUP BY pfx
+                        GROUP BY public_key
                     ) AS cct ON cct.pfx = mc.to_prefix
                     LEFT JOIN (
-                        SELECT LOWER(SUBSTR(public_key, 1, 2)) AS prefix, MAX(name) AS name
+                        SELECT LOWER(SUBSTR(public_key, 1, {prefix_len})) AS prefix, MAX(name) AS name
                         FROM complete_contact_tracking
                         WHERE name IS NOT NULL AND name != ''
-                        GROUP BY prefix
+                        GROUP BY public_key
                     ) AS cct2 ON cct2.prefix = mc.to_prefix
                     GROUP BY mc.to_prefix
                     ORDER BY fan_in DESC

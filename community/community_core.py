@@ -72,7 +72,7 @@ class CommunityBot(MeshCoreBot):
         )
 
         # Load scoring config
-        self.scoring_config = ScoringConfig.from_env_and_config(self.config)
+        self.scoring_config = ScoringConfig.from_env_and_config(str(Path(__file__).parent / "scoring_config.ini"))
         self.logger.info('Scoring config loaded')
         self.logger.debug(
             "Scoring weights loaded: infra=%.2f hops=%.2f path_bonus=%.2f freshness=%.2f",

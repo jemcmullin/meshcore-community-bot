@@ -292,6 +292,7 @@ def _community_metrics_impl(viewer):
     import re
     from community.config import ScoringConfig
     scoring_cfg = ScoringConfig()
+    prefix_len = scoring_cfg.repeater_prefix_byte_setting
     
     now = time.time()
     # Calculate local timezone offset in seconds
@@ -336,39 +337,39 @@ def _community_metrics_impl(viewer):
           # Calculate local timezone offset in hours
           cur.execute(
             f"""
-            SELECT mc.to_prefix,
+                 SELECT mc.to_prefix,
                    COUNT(DISTINCT mc.from_prefix) AS fan_in,
                    CAST((julianday('now', 'localtime') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
                    (SELECT MAX(c)
                     FROM (SELECT COUNT(DISTINCT from_prefix) AS c
-                          FROM mesh_connections
-                          GROUP BY to_prefix)) AS max_fan_in,
+                     FROM mesh_connections
+                     GROUP BY to_prefix)) AS max_fan_in,
                    cct.out_hops,
                    cct2.name,
                    cct2.device_type
-            FROM mesh_connections mc
-            LEFT JOIN (
+                 FROM mesh_connections mc
+                 LEFT JOIN (
               SELECT public_key,
-                     LOWER(SUBSTR(public_key, 1, 4)) AS pfx,
-                     MAX(hop_count) AS out_hops
+                LOWER(SUBSTR(public_key, 1, {prefix_len})) AS pfx,
+                MAX(hop_count) AS out_hops
               FROM complete_contact_tracking
               WHERE out_path_len IS NOT NULL
               GROUP BY public_key
-            ) AS cct ON cct.pfx = mc.to_prefix
-            LEFT JOIN (
+                 ) AS cct ON cct.pfx = mc.to_prefix
+                 LEFT JOIN (
               SELECT public_key,
-                     LOWER(SUBSTR(public_key, 1, 4)) AS prefix,
-                     MAX(name) AS name,
-                     MAX(device_type) AS device_type
+                LOWER(SUBSTR(public_key, 1, {prefix_len})) AS prefix,
+                MAX(name) AS name,
+                MAX(device_type) AS device_type
               FROM complete_contact_tracking
               WHERE name IS NOT NULL AND name != ''
               GROUP BY public_key
-            ) AS cct2 ON cct2.prefix = mc.to_prefix
-            WHERE cct2.device_type = 'repeater'
-            GROUP BY cct2.public_key
-            ORDER BY fan_in DESC
-            LIMIT 50
-            """
+                 ) AS cct2 ON cct2.prefix = mc.to_prefix
+                 WHERE cct2.device_type = 'repeater'
+                 GROUP BY cct2.prefix
+                 ORDER BY fan_in DESC
+                 LIMIT 50
+                 """
           )
           rows = cur.fetchall()
           max_fan_in     = max(int(rows[0]["max_fan_in"] or 1), 1) if rows else 1
