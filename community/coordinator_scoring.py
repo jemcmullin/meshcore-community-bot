@@ -31,7 +31,7 @@ class CoordinatorScoring:
 		path_hex = ''.join(path_nodes).lower() if path_nodes else None
 
 		# Infrastructure: fan-in per node from mesh_connections, direct path if hops==0
-		infrastructure = self.compute_infrastructure_score(path_nodes, db_manager, hops)
+		infrastructure = self.compute_infrastructure_score(path_nodes, db_manager, message)
 
 		# Path bonus: exact sender+path match in observed_paths
 		sender_prefix = getattr(message, 'sender_prefix', None)
@@ -53,12 +53,29 @@ class CoordinatorScoring:
 			return 0.5
 		return 1 / (1 + hops)
 
-	def compute_infrastructure_score(self, path_nodes, db_manager, hops=None):
-		# Direct path: no hops, no infrastructure is best infrastructure
+	def compute_infrastructure_score(self, path_nodes, db_manager, message=None):
+		# Direct path: no hops, score based on SNR/RSSI
+		hops = getattr(message, 'hops', None) 
 		if hops is not None and hops == 0:
 			if path_nodes is not None and len(path_nodes) > 0:
-				logger.warning("Message has 0 hops but path nodes exist, possible incorrect infra score")
-			return 1.0
+				logger.warning("Message has 0 hops but path nodes %s exist, possible incorrect infra score", path_nodes)
+			snr = getattr(message, 'snr', None)
+			rssi = getattr(message, 'rssi', None)
+
+			# Normalize SNR (assume -15 to +15 dB typical range)
+			snr_score = 0.5
+			if snr is not None:
+				snr_score = min(max((snr + 15) / 30.0, 0.0), 1.0)
+			
+			# Normalize RSSI (assume -120 to -30 dBm typical range)
+			rssi_score = 0.5
+			if rssi is not None:
+				rssi_score = min(max((rssi + 120) / 90.0, 0.0), 1.0)
+			
+			# Blend SNR/RSSI (weight SNR 70%, RSSI 30%)
+			infra_score = snr_score * 0.7 + rssi_score * 0.3
+			return infra_score
+		
 		# Not direct but no path info, assume average infrastructure
 		if not path_nodes:
 			return 0.5
