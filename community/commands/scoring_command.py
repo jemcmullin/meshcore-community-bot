@@ -15,7 +15,6 @@ class ScoringCommand(BaseCommand):
         try:
             from community.config import ScoringConfig
             scoring_cfg = ScoringConfig()
-            prefix_len = scoring_cfg.repeater_prefix_byte_setting
             
             def load_metrics():
                 # Query top infrastructure relays and basic bid-health metrics

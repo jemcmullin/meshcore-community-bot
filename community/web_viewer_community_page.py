@@ -292,8 +292,6 @@ def _community_metrics_impl(viewer):
     import re
     from community.config import ScoringConfig
     scoring_cfg = ScoringConfig()
-    prefix_len = scoring_cfg.repeater_prefix_byte_setting
-    print(f"[community_metrics] prefix_len={prefix_len}")
     
     now = time.time()
     # Calculate local timezone offset in seconds
