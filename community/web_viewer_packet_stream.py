@@ -70,7 +70,11 @@ async def publish_web_viewer_coordination_event(
     if not wvi or not getattr(wvi, "bot_integration", None):
         return
 
+    sender_id = getattr(message, 'sender_id', None)
+
     summary_parts = [f"stage={stage}", f"score={delivery_score:.3f}"]
+    if sender_id is not None:
+        summary_parts.append(f"sender={sender_id}")
     if hop_component is not None:
         summary_parts.append(f"hop_comp={hop_component:.3f}")
     if infra_component is not None:
