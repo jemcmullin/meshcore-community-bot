@@ -38,7 +38,8 @@ class CoordinatorScoring:
 		path_bonus = self.compute_path_bonus(sender_prefix, path_hex, db_manager)
 
 		# Freshness: recency decay from observed_paths
-		path_freshness = self.compute_path_freshness(sender_prefix, db_manager)
+		sender_id = getattr(message, 'sender_id', None)
+		path_freshness = self.compute_freshness(sender_prefix, sender_id, db_manager)
 
 		return hop_score, infrastructure, path_bonus, path_freshness
 
@@ -53,40 +54,71 @@ class CoordinatorScoring:
 			return 0.5
 		return 1 / (1 + hops)
 
-	def compute_infrastructure_score(self, path_nodes, db_manager, message=None):
+	def compute_infrastructure_score(self, path_prefixes, db_manager, message=None):
 		# Direct path: no hops, score based on SNR/RSSI
-		hops = getattr(message, 'hops', None) 
+		hops = getattr(message, 'hops', None)
 		if hops is not None and hops == 0:
-			if path_nodes is not None and len(path_nodes) > 0:
-				logger.warning("Message has 0 hops but path nodes %s exist, possible incorrect infra score", path_nodes)
 			snr = getattr(message, 'snr', None)
 			rssi = getattr(message, 'rssi', None)
-
 			# Normalize SNR (assume -15 to +15 dB typical range)
 			snr_score = 0.5
 			if snr is not None:
 				snr_score = min(max((snr + 15) / 30.0, 0.0), 1.0)
-			
 			# Normalize RSSI (assume -120 to -30 dBm typical range)
 			rssi_score = 0.5
 			if rssi is not None:
 				rssi_score = min(max((rssi + 120) / 90.0, 0.0), 1.0)
-			
 			# Blend SNR/RSSI (weight SNR 70%, RSSI 30%)
 			infra_score = snr_score * 0.7 + rssi_score * 0.3
 			return infra_score
-		
+
 		# Not direct but no path info, assume average infrastructure
-		if not path_nodes:
+		if not path_prefixes:
 			return 0.5
-		# Proceed to score infrastructure based on fan-in of nodes in path
+
+		# Score infrastructure based on fan-in of nodes in path
+		# The logic below became more complex to support transition from 2-byte to 4-byte (and longer) prefixes.
+		# It deduplicates ambiguous prefix/public key matches to prevent inflated infrastructure scores
+		# when prefixes overlap or multiple public keys share a prefix. This ensures each node is counted
+		# only once in almost all cases, regardless of prefix length or DB schema.
 		scores = []
 		max_fan_in = 1
-		for node in path_nodes:
-			# Query fan-in for node
-			query = "SELECT COUNT(DISTINCT from_prefix) AS fan_in FROM mesh_connections WHERE to_prefix = ?"
-			result = db_manager.execute_query(query, (node,))
-			fan_in = result[0]['fan_in'] if result and 'fan_in' in result[0] else 0
+		for node_prefix in path_prefixes:
+			
+			# Fetch all relevant rows
+			query = """
+				SELECT from_prefix, from_public_key
+				FROM mesh_connections
+				WHERE (
+					(to_public_key IS NOT NULL AND to_public_key LIKE ?)
+					OR (to_public_key IS NULL AND to_prefix = ?)
+				)
+			"""
+			like_pattern = f'{node_prefix}%'  # Match public keys starting with node
+			rows = db_manager.execute_query(query, (like_pattern, node_prefix))
+
+			public_keys = set()
+			prefixes = []
+
+			for row in rows:
+				public_key = row.get('from_public_key')
+				prefix = row.get('from_prefix')
+				if public_key:
+					public_keys.add(public_key)
+				elif prefix:
+					prefixes.append(prefix)
+
+
+			unique_ids = set(public_keys)
+			for prefix in prefixes:
+				matches = [pk for pk in public_keys if pk.startswith(prefix)]
+				if len(matches) == 1:
+					unique_ids.add(matches[0])  # count as the node
+				elif len(matches) == 0:
+					unique_ids.add(prefix)      # count as unique prefix node
+				# else: len(matches) > 1, ambiguous, ignore
+
+			fan_in = len(unique_ids)
 			max_fan_in = max(max_fan_in, fan_in)
 			scores.append(fan_in)
 		# Normalize scores
@@ -104,19 +136,66 @@ class CoordinatorScoring:
 		result = db_manager.execute_query(query, (sender_prefix.lower(), path_hex))
 		return 1.0 if result else 0.0
 
-	def compute_path_freshness(self, sender_prefix, db_manager):
+	def compute_freshness(self, sender_prefix, sender_id, db_manager):
 		if not sender_prefix:
 			return 0.5
-		query = "SELECT last_seen FROM observed_paths WHERE LOWER(from_prefix) = ? AND packet_type = 'message' ORDER BY last_seen DESC LIMIT 1"
-		result = db_manager.execute_query(query, (sender_prefix.lower(),))
-		if result and 'last_seen' in result[0]:
-			from datetime import datetime
-			last_seen = result[0]['last_seen']
-			now = datetime.now()
+		from datetime import datetime, timedelta
+		now = datetime.now()
+		
+		def freshness_calc(last_seen):
 			try:
 				last_seen_dt = datetime.fromisoformat(last_seen)
 			except Exception:
 				return 0.5
 			age_hours = (now - last_seen_dt).total_seconds() / 3600.0
 			return math.exp(-age_hours / 24.0)
+
+		try:
+			# Primary: check packet_stream for last message seen
+			if not sender_id:
+				raise Exception("No sender_id available for packet_stream query")
+			cutoff = now - timedelta(hours=24)
+			max_messages = 5
+			# Query up to max_messages recent messages from sender within window
+			query = (
+				"SELECT timestamp FROM packet_stream WHERE data LIKE ? "
+				"AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?"
+			)
+			result = db_manager.execute_query(query, (f'%\"user\": \"{sender_id}\"%', cutoff.isoformat(), max_messages))
+			if not result:
+				raise Exception("No result or packet_stream not available")
+			freshness_scores = []
+			for row in result:
+				timestamp = row.get('timestamp')
+				if timestamp:
+					freshness = freshness_calc(timestamp)
+					freshness_scores.append(freshness)
+			if freshness_scores:
+				return sum(freshness_scores) / len(freshness_scores)
+			return 0.5
+		except Exception:
+			# Fallback: use complete_contact_tracking as before but likely an advert time 
+			query_complete_contact_tracking = "SELECT last_heard FROM complete_contact_tracking WHERE public_key LIKE ? AND role = 'companion' ORDER BY last_heard DESC LIMIT 1"
+			result = db_manager.execute_query(query_complete_contact_tracking, (f'{sender_prefix}%',))
+			if result and 'last_seen' in result[0]:
+				last_seen = result[0]['last_seen']
+				return freshness_calc(last_seen)
 		return 0.5
+
+	# Preferred method not viable until message observed_paths also implemented. Currently only adverts.
+	# def compute_path_freshness(self, sender_prefix, db_manager):
+	# 	if not sender_prefix:
+	# 		return 0.5
+	# 	query = "SELECT last_seen FROM observed_paths WHERE LOWER(from_prefix) = ? AND packet_type = 'message' ORDER BY last_seen DESC LIMIT 1"
+	# 	result = db_manager.execute_query(query, (sender_prefix.lower(),))
+	# 	if result and 'last_seen' in result[0]:
+	# 		from datetime import datetime
+	# 		last_seen = result[0]['last_seen']
+	# 		now = datetime.now()
+	# 		try:
+	# 			last_seen_dt = datetime.fromisoformat(last_seen)
+	# 		except Exception:
+	# 			return 0.5
+	# 		age_hours = (now - last_seen_dt).total_seconds() / 3600.0
+	# 		return math.exp(-age_hours / 24.0)
+	# 	return 0.5
