@@ -138,7 +138,7 @@ class CoordinatorScoring:
 
 	def compute_freshness(self, sender_prefix, sender_id, db_manager):
 		if not sender_prefix:
-			return 0.5
+			return 0
 		from datetime import datetime, timedelta
 		now = datetime.now()
 		
@@ -146,7 +146,7 @@ class CoordinatorScoring:
 			try:
 				last_seen_dt = datetime.fromisoformat(last_seen)
 			except Exception:
-				return 0.5
+				return 0
 			age_hours = (now - last_seen_dt).total_seconds() / 3600.0
 			return math.exp(-age_hours / 24.0)
 
@@ -171,8 +171,11 @@ class CoordinatorScoring:
 					freshness = freshness_calc(timestamp)
 					freshness_scores.append(freshness)
 			if freshness_scores:
-				return sum(freshness_scores) / len(freshness_scores)
-			return 0.5
+				fresh_sum = sum(freshness_scores)
+				# Cap at 1.0, recent rewarded, multiple rewarded but with diminishing returns
+				# Compatible with fallback 
+				return min(fresh_sum, 1.0)
+			return 0
 		except Exception:
 			# Fallback: use complete_contact_tracking as before but likely an advert time 
 			query_complete_contact_tracking = "SELECT last_heard FROM complete_contact_tracking WHERE public_key LIKE ? AND role = 'companion' ORDER BY last_heard DESC LIMIT 1"
@@ -180,7 +183,7 @@ class CoordinatorScoring:
 			if result and 'last_seen' in result[0]:
 				last_seen = result[0]['last_seen']
 				return freshness_calc(last_seen)
-		return 0.5
+		return 0
 
 	# Preferred method not viable until message observed_paths also implemented. Currently only adverts.
 	# def compute_path_freshness(self, sender_prefix, db_manager):

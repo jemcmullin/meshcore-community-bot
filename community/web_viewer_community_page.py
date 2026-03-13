@@ -380,12 +380,11 @@ def _community_metrics_impl(viewer):
             hop_score = 0.25 if out_hops is None else (1.0 / (1 + out_hops))
             path_bonus = 0.0
             freshness = math.exp(-age_hours / 24.0)
-            # normalize scoring_cfg.infrastructure_weight + scoring_cfg.hop_weight to equal 1
             significance = (
                 infra * scoring_cfg.infrastructure_weight +
                 hop_score * scoring_cfg.hop_weight
             )
-            if age_hours > 96: # 4 days, ignore
+            if age_hours > 60: # 2.5 days, ignore
                continue
             top_repeaters.append(
               {
