@@ -88,7 +88,7 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
             <th title="Stored outbound hops from this bot to relay">Hops</th>
             <th title="Unique source nodes routing through this relay">Links</th>
             <th title="Time since relay last seen in mesh traffic">Last</th>
-            <th title="Estimated delivery score. Hover row for component breakdown.">Score\nContribution</th>
+            <th title="Estimated contribution to delivery score. Hops used to stand-in on hop score. Hover row for component breakdown.">Score<br>Contribution</th>
           </tr></thead>
           <tbody id="repeaters"></tbody>
         </table>
