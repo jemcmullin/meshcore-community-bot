@@ -18,6 +18,7 @@ class ScoringCommand(BaseCommand):
             
             def load_metrics():
                 # Query top infrastructure relays and basic bid-health metrics
+                # May inflate score when mixed prefix length connections exist and public key is missing. Actual scoring implements deduplication.
                 return self.bot.db_manager.execute_query(
                     f"""
                     SELECT COALESCE(mc.to_public_key, mc.to_prefix) AS node,

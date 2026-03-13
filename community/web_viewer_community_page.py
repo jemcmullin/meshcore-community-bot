@@ -332,7 +332,7 @@ def _community_metrics_impl(viewer):
         # Path bonus is message-specific, so repeater rows use 0.0.
         if "mesh_connections" in tables and "complete_contact_tracking" in tables:
           # Calculate local timezone offset in hours
-          
+          # May inflate score when mixed prefix length connections exist and public key is missing. Actual scoring implements deduplication.
           cur.execute(
             f"""
             SELECT COALESCE(mc.to_public_key, mc.to_prefix) AS node,
