@@ -72,17 +72,19 @@ async def publish_web_viewer_coordination_event(
 
     sender_id = getattr(message, 'sender_id', None)
 
-    summary_parts = [f"stage={stage}", f"score={delivery_score:.3f}"]
+    summary_parts = [f"stage={stage}", f"score={delivery_score:.2f}"]
     if sender_id is not None:
         summary_parts.append(f"sender={sender_id}")
+    if stage == 'bid':
+        summary_parts.append("| Comp:")
     if hop_component is not None:
-        summary_parts.append(f"hop_comp={hop_component:.3f}")
+        summary_parts.append(f"hop={hop_component:.2f}")
     if infra_component is not None:
-        summary_parts.append(f"infra_comp={infra_component:.3f}")
+        summary_parts.append(f"infra={infra_component:.2f}")
     if path_bonus_component is not None:
-        summary_parts.append(f"path_bonus_comp={path_bonus_component:.3f}")
+        summary_parts.append(f"path_bonus={path_bonus_component:.2f}")
     if freshness_component is not None:
-        summary_parts.append(f"fresh_comp={freshness_component:.3f}")
+        summary_parts.append(f"fresh={freshness_component:.2f}")
     summary = " ".join(summary_parts)
 
     command_id = f"coord:{message_hash[:12]}"
