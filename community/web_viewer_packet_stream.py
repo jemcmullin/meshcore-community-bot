@@ -72,13 +72,13 @@ async def publish_web_viewer_coordination_event(
 
     summary_parts = [f"stage={stage}", f"score={delivery_score:.3f}"]
     if hop_component is not None:
-        summary_parts.append(f"hop_comp={hop_component}")
+        summary_parts.append(f"hop_comp={hop_component:.3f}")
     if infra_component is not None:
-        summary_parts.append(f"infra_comp={infra_component}")
+        summary_parts.append(f"infra_comp={infra_component:.3f}")
     if path_bonus_component is not None:
-        summary_parts.append(f"path_bonus_comp={path_bonus_component}")
+        summary_parts.append(f"path_bonus_comp={path_bonus_component:.3f}")
     if freshness_component is not None:
-        summary_parts.append(f"fresh_comp={freshness_component}")
+        summary_parts.append(f"fresh_comp={freshness_component:.3f}")
     summary = " ".join(summary_parts)
 
     command_id = f"coord:{message_hash[:12]}"
