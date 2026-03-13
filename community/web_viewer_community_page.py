@@ -372,12 +372,12 @@ def _community_metrics_impl(viewer):
             """
           )
           rows = cur.fetchall()
-          max_fan_in = max(int(rows[0].get("max_fan_in", 1)), 1) if rows else 1
+          max_fan_in = max(int(rows[0]["max_fan_in"] if "max_fan_in" in rows[0].keys() else 1), 1) if rows else 1
           log_max_fan = math.log1p(max_fan_in)
           for r in rows:
-            fan_in = int(r.get("fan_in", 0))
-            out_hops = r.get("out_hops", None)
-            age_hours = float(r.get("age_hours", 999))
+            fan_in = int(r["fan_in"] if "fan_in" in r.keys() else 0)
+            out_hops = r["out_hops"] if "out_hops" in r.keys() else None
+            age_hours = float(r["age_hours"] if "age_hours" in r.keys() else 999)
             infra = math.log1p(fan_in) / log_max_fan
             hop_score = 0.25 if out_hops is None else (1.0 / (1 + out_hops))
             path_bonus = 0.0
@@ -391,8 +391,8 @@ def _community_metrics_impl(viewer):
 
             top_repeaters.append(
               {
-                "node": r.get("node", "").upper().replace("!", "")[:4],
-                "name": r.get("name", None),
+                "node": (r["node"] if "node" in r.keys() else "").upper().replace("!", "")[:4],
+                "name": r["name"] if "name" in r.keys() else None,
                 "fan_in": fan_in,
                 "age_hours": round(age_hours, 1),
                 "out_hops": int(out_hops) if out_hops is not None else None,
