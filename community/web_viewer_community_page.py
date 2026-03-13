@@ -87,7 +87,6 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
             <th title="Active &lt;24h · Recent 24–48h · Stale &gt;48h">Status</th>
             <th title="Stored outbound hops from this bot to relay">Hops</th>
             <th title="Unique source nodes routing through this relay">Links</th>
-            <th title="Links as % of total known nodes">Coverage</th>
             <th title="Time since relay last seen in mesh traffic">Last</th>
             <th title="Estimated delivery score. Hover row for component breakdown.">Score</th>
           </tr></thead>
@@ -200,13 +199,12 @@ async function refresh() {
         <td style="color:${statusColor};font-weight:bold">${statusLabel}</td>
         <td>${pathLabel}</td>
         <td>${r.fan_in}</td>
-        <td>${r.coverage_pct.toFixed(0)}%</td>
         <td>${lastSeen}</td>
         <td>${r.significance.toFixed(2)}</td>
       </tr>`;
-    }).join('') || '<tr><td colspan="8">No repeater data</td></tr>';
+    }).join('') || '<tr><td colspan="7">No repeater data</td></tr>';
     document.getElementById('repeaters-caption').textContent =
-      'Status: Active <24h · Recent 24–48h · Stale >48h  ·  Score: hover row for component breakdown';
+      'Status: Active <24h · Recent 24-48h · Stale >48h  ·  Score: hover row for component breakdown';
 
     document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => `
       <tr>
@@ -388,7 +386,8 @@ def _community_metrics_impl(viewer):
                 path_bonus * scoring_cfg.path_bonus_weight +
                 freshness * scoring_cfg.freshness_weight
             )
-
+            if age_hours > 96: # 4 days, ignore
+               continue
             top_repeaters.append(
               {
                 "node": (r["node"] if "node" in r.keys() else "").upper().replace("!", "")[:4],
@@ -401,7 +400,6 @@ def _community_metrics_impl(viewer):
                 "path_bonus": round(path_bonus, 3),
                 "freshness": round(freshness, 3),
                 "significance": round(significance, 3),
-                "coverage_pct": (fan_in / total_nodes) * 100.0,
               }
             )
           # Re-sort by significance (SQL ordered by fan_in; significance order differs)

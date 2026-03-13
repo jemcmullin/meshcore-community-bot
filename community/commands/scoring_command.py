@@ -24,28 +24,34 @@ class ScoringCommand(BaseCommand):
                         COUNT(DISTINCT mc.from_public_key) AS fan_in,
                         CAST((julianday('now', 'localtime') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
                         (SELECT MAX(c)
-                            FROM (SELECT COUNT(DISTINCT from_public_key) AS c
-                                FROM mesh_connections
-                                GROUP BY to_public_key)) AS max_fan_in,
+                        FROM (SELECT COUNT(DISTINCT from_public_key) AS c
+                            FROM mesh_connections
+                            GROUP BY to_public_key)) AS max_fan_in,
                         cct.out_hops,
                         cct2.name
                     FROM mesh_connections mc
                     LEFT JOIN (
-                        SELECT public_key,
-                            MAX(hop_count) AS out_hops
-                        FROM complete_contact_tracking
-                        WHERE out_path_len IS NOT NULL 
-                        GROUP BY public_key
-                    ) AS cct ON cct.public_key = mc.to_public_key
+                    SELECT public_key,
+                        MAX(hop_count) AS out_hops
+                    FROM complete_contact_tracking
+                    WHERE out_path_len IS NOT NULL
+                    GROUP BY public_key
+                    ) AS cct ON (
+                    (mc.to_public_key IS NOT NULL AND cct.public_key = mc.to_public_key)
+                    OR (mc.to_public_key IS NULL AND cct.public_key LIKE mc.to_prefix || '%')
+                    )
                     LEFT JOIN (
-                        SELECT public_key, MAX(name) AS name
-                        FROM complete_contact_tracking
-                        WHERE name IS NOT NULL AND name != ''
-                        GROUP BY public_key
-                    ) AS cct2 ON cct2.public_key = mc.to_public_key
+                    SELECT public_key, MAX(name) AS name
+                    FROM complete_contact_tracking
+                    WHERE name IS NOT NULL AND name != ''
+                    GROUP BY public_key
+                    ) AS cct2 ON (
+                    (mc.to_public_key IS NOT NULL AND cct2.public_key = mc.to_public_key)
+                    OR (mc.to_public_key IS NULL AND cct2.public_key LIKE mc.to_prefix || '%')
+                    )
                     GROUP BY node
                     ORDER BY fan_in DESC
-                    LIMIT 8
+                    LIMIT 10
                     """
                 )
 
@@ -69,6 +75,7 @@ class ScoringCommand(BaseCommand):
                 age_hours = float(row.get("age_hours") or 999)
                 if age_hours > 48:
                     stale_nodes += 1
+                    continue # Skip in this list once counted as stale
                 hops = row.get("out_hops")
                 # Calculate scoring components
                 infra = math.log1p(fan_in) / log_max_fan if log_max_fan > 0 else 0.0
