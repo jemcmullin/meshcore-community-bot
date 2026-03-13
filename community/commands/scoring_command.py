@@ -51,7 +51,7 @@ class ScoringCommand(BaseCommand):
                     )
                     GROUP BY node
                     ORDER BY fan_in DESC
-                    LIMIT 10
+                    LIMIT 20
                     """
                 )
 
@@ -100,16 +100,7 @@ class ScoringCommand(BaseCommand):
                     freshness * scoring_cfg.freshness_weight
                 )
             
-
-            # for row in infra_rows:
-            #     node_val = row.get("node") or ""
-            #     node = node_val.upper().replace("!", "")[:4]
-            #     fan_in = int(row.get("fan_in") or 0)
-            #     age_hours = float(row.get("age_hours") or 999)
-            #     hops = row.get("out_hops")
-            #     if age_hours > 48:
-            #         stale_nodes += 1
-            #     top_nodes.append((node, fan_in, hops))
+            top_nodes.sort(key=lambda x: x[3], reverse=True)  # Sort by significance
 
             # Radio-safe output: limit to 5 nodes, keep message short
             max_len = self.get_max_message_length(message)
@@ -117,7 +108,7 @@ class ScoringCommand(BaseCommand):
             for node, links, hops, sig in top_nodes[:5]:
                 hop_str = f"{hops}" if hops is not None else "?"
                 sig_str = f"{sig:.2f}"
-                lines.append(f"{node:<4} {links:>5} {hop_str:>5} {sig_str:>6}")
+                lines.append(f"{str(node):<4} {str(links):>5} {str(hop_str):>5} {str(sig_str):>6}")
 
             if stale_nodes > 0:
                 lines.append(f"Stale: {stale_nodes}")
