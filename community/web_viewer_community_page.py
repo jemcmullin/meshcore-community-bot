@@ -121,7 +121,7 @@ async function refresh() {
     document.getElementById('meta').textContent = `Updated ${new Date(data.timestamp * 1000).toLocaleTimeString()} | DB: ${data.db_path}`;
     document.getElementById('network').innerHTML = `
       <div><b>Total known nodes:</b> ${data.network.total_nodes}</div>
-      <div><b>Last hour bid events:</b> ${data.coordination.event_count}</div>
+      
     `;
 
     const coord = data.coordination;
