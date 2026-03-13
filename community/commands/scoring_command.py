@@ -112,6 +112,7 @@ class ScoringCommand(BaseCommand):
                 lines.append(f"{nodes_str} {str(links):>7} {str(hop_str):>7} {str(sig_str):>7}") # extra pad to compensate for font
 
             if stale_nodes > 0:
+                lines = lines[:4]
                 lines.append(f"Stale: {stale_nodes}")
 
             text = "\n".join(lines)
