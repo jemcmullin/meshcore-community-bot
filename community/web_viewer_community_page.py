@@ -88,7 +88,7 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
             <th title="Stored outbound hops from this bot to relay">Hops</th>
             <th title="Unique source nodes routing through this relay">Links</th>
             <th title="Time since relay last seen in mesh traffic">Last</th>
-            <th title="Estimated delivery score. Hover row for component breakdown.">Score</th>
+            <th title="Estimated delivery score. Hover row for component breakdown.">Score\nContribution</th>
           </tr></thead>
           <tbody id="repeaters"></tbody>
         </table>
@@ -97,7 +97,7 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
       <section class=\"card\" style=\"grid-column: 1/-1;\">
         <h3>Recent Bid Events</h3>
         <table>
-          <thead><tr><th>Time</th><th>Stage</th><th>Score</th><th>Details</th></tr></thead>
+          <thead><tr><th>Time</th><th>Stage</th><th>Bid\nScore</th><th>Details</th></tr></thead>
           <tbody id=\"events\"></tbody>
         </table>
       </section>
@@ -380,11 +380,10 @@ def _community_metrics_impl(viewer):
             hop_score = 0.25 if out_hops is None else (1.0 / (1 + out_hops))
             path_bonus = 0.0
             freshness = math.exp(-age_hours / 24.0)
+            # normalize scoring_cfg.infrastructure_weight + scoring_cfg.hop_weight to equal 1
             significance = (
                 infra * scoring_cfg.infrastructure_weight +
-                hop_score * scoring_cfg.hop_weight +
-                path_bonus * scoring_cfg.path_bonus_weight +
-                freshness * scoring_cfg.freshness_weight
+                hop_score * scoring_cfg.hop_weight
             )
             if age_hours > 96: # 4 days, ignore
                continue

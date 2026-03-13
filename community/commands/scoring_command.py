@@ -85,27 +85,16 @@ class ScoringCommand(BaseCommand):
                 freshness = math.exp(-age_hours / 24.0)
                 significance = (
                     infra * scoring_cfg.infrastructure_weight +
-                    hop_score * scoring_cfg.hop_weight +
-                    path_bonus * scoring_cfg.path_bonus_weight +
-                    freshness * scoring_cfg.freshness_weight
+                    hop_score * scoring_cfg.hop_weight
                 )
                 
                 top_nodes.append((node, fan_in, hops, significance))
-                hop_score   = 0.25 if hops is None else (1.0 / (1 + hops))
-                path_bonus  = 0.0
-                freshness   = math.exp(-age_hours / 24.0)
-                significance = (
-                    infra * scoring_cfg.infrastructure_weight +
-                    hop_score * scoring_cfg.hop_weight +
-                    path_bonus * scoring_cfg.path_bonus_weight +
-                    freshness * scoring_cfg.freshness_weight
-                )
             
             top_nodes.sort(key=lambda x: x[3], reverse=True)  # Sort by significance
 
             # Radio-safe output: limit to 5 nodes, keep message short
             max_len = self.get_max_message_length(message)
-            lines = [f"{'Node':<4} {'Links':>5} {'Hops':>5} {'Sig':>6}"]
+            lines = [f"{'Node':<4} {'Links':>5} {'Hops':>5} {'Score':>6}"]
             for node, links, hops, sig in top_nodes[:5]:
                 hop_str = f"{hops}" if hops is not None else "?"
                 sig_str = f"{sig:.2f}"
