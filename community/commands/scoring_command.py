@@ -108,7 +108,8 @@ class ScoringCommand(BaseCommand):
             for node, links, hops, sig in top_nodes[:5]:
                 hop_str = f"{hops}" if hops is not None else "?"
                 sig_str = f"{sig:.2f}"
-                lines.append(f"{str(node):<4} {str(links):>5} {str(hop_str):>5} {str(sig_str):>6}")
+                nodes_str = f"{node:<4}" if len(node) >= 4 else f"{node:<6}"
+                lines.append(f"{nodes_str} {str(links):>7} {str(hop_str):>7} {str(sig_str):>7}") # extra pad to compensate for font
 
             if stale_nodes > 0:
                 lines.append(f"Stale: {stale_nodes}")
