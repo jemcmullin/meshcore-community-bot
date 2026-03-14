@@ -20,22 +20,38 @@ class CoordinatorScoring:
 		)
 
 	def get_path_metrics(self, message, db_manager):
-		"""Return (hop_score, infrastructure, path_bonus, path_freshness) for a message."""
+		"""Return (hop_score, infrastructure, path_bonus, path_freshness) for a message.
+		
+		For Reference from `meshcore-bot/modules/message_handler.py`
+		message = MeshMessage(
+                content=message_content,  # Use the extracted message content
+                sender_id=sender_id,
+                sender_pubkey=sender_pubkey, #prefix if not in contacts
+                channel=channel_name,
+                timestamp=payload.get('sender_timestamp', 0),
+                snr=snr,
+                rssi=rssi,
+                hops=hops,
+                path=path_string,  # path extracted from RF data. csv string
+                elapsed=_elapsed,
+                is_dm=False # for channel
+            )
+		
+		"""
 		# Hop score
 		hops = getattr(message, 'hops', None)
 		hop_score = self.compute_hop_score(hops)
 
-		# Path nodes
+		# Path nodes, will be csv string or 'Direct', parse csv to list
 		path = getattr(message, 'path', None)
-		path_nodes = self.parse_path_nodes(path)
-		path_hex = ''.join(path_nodes).lower() if path_nodes else None
+		path_nodes = path.split(',') if path and path.lower() != 'direct' else []
 
 		# Infrastructure: fan-in per node from mesh_connections, direct path if hops==0
 		infrastructure = self.compute_infrastructure_score(path_nodes, db_manager, message)
 
 		# Path bonus: exact sender+path match in observed_paths
 		sender_prefix = getattr(message, 'sender_prefix', None)
-		path_bonus = self.compute_path_bonus(sender_prefix, path_hex, db_manager)
+		path_bonus = self.compute_path_bonus(sender_prefix, path_nodes, db_manager)
 
 		# Freshness: recency decay from observed_paths
 		sender_id = getattr(message, 'sender_id', None)
@@ -43,18 +59,16 @@ class CoordinatorScoring:
 
 		return hop_score, infrastructure, path_bonus, path_freshness
 
-	def parse_path_nodes(self, path):
-		if not path:
-			return []
-		# Example: path is a hex string, split every 2 chars
-		return [path[i:i+2] for i in range(0, len(path), 2)]
-
 	def compute_hop_score(self, hops):
+		'''Reward proximity. Less hops, higher delivery potential.'''
 		if hops is None:
 			return 0.5
 		return 1 / (1 + hops)
 
 	def compute_infrastructure_score(self, path_prefixes, db_manager, message=None):
+		'''Reward incoming paths on well connected infrastructure as a higher confidence 
+		parallel of returning a message.
+		'''
 		# Direct path: no hops, score based on SNR/RSSI
 		hops = getattr(message, 'hops', None)
 		if hops is not None and hops == 0:
@@ -129,20 +143,34 @@ class CoordinatorScoring:
 			return hm
 		return 0.5
 
-	def compute_path_bonus(self, sender_prefix, path_hex, db_manager):
-		if not sender_prefix or not path_hex:
+	def compute_path_bonus(self, sender_prefix, path_nodes, db_manager):
+		'''Reward if this sender+path seen before in message_stats. 
+		A lower confidence parallel of connectivity.
+		'''
+		if not sender_prefix or not path_nodes:
 			return 0.0
-		query = "SELECT 1 FROM observed_paths WHERE LOWER(from_prefix) = ? AND LOWER(path_hex) = ? AND packet_type = 'message' LIMIT 1"
-		result = db_manager.execute_query(query, (sender_prefix.lower(), path_hex))
-		return 1.0 if result else 0.0
+		# Convert path_nodes to CSV string for direct comparison
+		path_csv = ','.join(path_nodes).lower() if path_nodes else None
+		query = "SELECT Count(id) FROM message_stats WHERE sender_id = ? AND LOWER(path) = ? LIMIT 2"
+		result = db_manager.execute_query(query, (sender_prefix, path_csv))
+		if len(result) > 1:
+			return 1.0  # History more than this message
+		return 0.0
 
 	def compute_freshness(self, sender_prefix, sender_id, db_manager):
+		'''Reward if this sender seen recently and frequently in message_stats.
+		A lower confidence parallel of connectivity. Biased by active users so keep weight low.
+		Freshness => 'Sender Recency' in this approach. Considered path based as alternative.
+		'''
+		relevance_time_window_hours = 24
+		max_messages_considered = 5
+
 		if not sender_prefix:
 			return 0
 		from datetime import datetime, timedelta
 		now = datetime.now()
 		
-		def freshness_calc(last_seen):
+		def recency_calc(last_seen):
 			try:
 				last_seen_dt = datetime.fromisoformat(last_seen)
 			except Exception:
@@ -153,52 +181,36 @@ class CoordinatorScoring:
 		try:
 			# Primary: check packet_stream for last message seen
 			if not sender_id:
-				raise Exception("No sender_id available for packet_stream query")
-			cutoff = now - timedelta(hours=24)
-			max_messages = 5
+				raise Exception("No sender_id available")
+			cutoff = now - timedelta(hours=relevance_time_window_hours)
+
 			# Query up to max_messages recent messages from sender within window
 			query = (
-				"SELECT timestamp FROM packet_stream WHERE data LIKE ? "
+				"SELECT timestamp FROM message_stats WHERE sender_id = ? "
 				"AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?"
 			)
-			result = db_manager.execute_query(query, (f'%\"user\": \"{sender_id}\"%', cutoff.isoformat(), max_messages))
+			# Use integer timestamp for cutoff
+			cutoff_ts = int(cutoff.timestamp())
+			result = db_manager.execute_query(query, (sender_id, cutoff_ts, max_messages_considered))
 			if not result:
-				raise Exception("No result or packet_stream not available")
-			freshness_scores = []
+				raise Exception("No result or message_stats not available")
+			recency_scores = []
 			for row in result:
 				timestamp = row.get('timestamp')
 				if timestamp:
-					freshness = freshness_calc(timestamp)
-					freshness_scores.append(freshness)
-			if freshness_scores:
-				fresh_sum = sum(freshness_scores)
+					recency = recency_calc(timestamp)
+					recency_scores.append(recency)
+			if recency_scores:
+				fresh_sum = sum(recency_scores) * 0.33
 				# Cap at 1.0, recent rewarded, multiple rewarded but with diminishing returns
 				# Compatible with fallback 
 				return min(fresh_sum, 1.0)
 			return 0
 		except Exception:
-			# Fallback: use complete_contact_tracking as before but likely an advert time 
+			# Fallback: use complete_contact_tracking, likely an advert time 
 			query_complete_contact_tracking = "SELECT last_heard FROM complete_contact_tracking WHERE public_key LIKE ? AND role = 'companion' ORDER BY last_heard DESC LIMIT 1"
 			result = db_manager.execute_query(query_complete_contact_tracking, (f'{sender_prefix}%',))
 			if result and 'last_seen' in result[0]:
 				last_seen = result[0]['last_seen']
-				return freshness_calc(last_seen)
+				return recency_calc(last_seen)
 		return 0
-
-	# Preferred method not viable until message observed_paths also implemented. Currently only adverts.
-	# def compute_path_freshness(self, sender_prefix, db_manager):
-	# 	if not sender_prefix:
-	# 		return 0.5
-	# 	query = "SELECT last_seen FROM observed_paths WHERE LOWER(from_prefix) = ? AND packet_type = 'message' ORDER BY last_seen DESC LIMIT 1"
-	# 	result = db_manager.execute_query(query, (sender_prefix.lower(),))
-	# 	if result and 'last_seen' in result[0]:
-	# 		from datetime import datetime
-	# 		last_seen = result[0]['last_seen']
-	# 		now = datetime.now()
-	# 		try:
-	# 			last_seen_dt = datetime.fromisoformat(last_seen)
-	# 		except Exception:
-	# 			return 0.5
-	# 		age_hours = (now - last_seen_dt).total_seconds() / 3600.0
-	# 		return math.exp(-age_hours / 24.0)
-	# 	return 0.5
