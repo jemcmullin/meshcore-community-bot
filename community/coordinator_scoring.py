@@ -47,14 +47,17 @@ class CoordinatorScoring:
 		path_nodes = path.split(',') if path and path.lower() != 'direct' else []
 
 		# Infrastructure: fan-in per node from mesh_connections, direct path if hops==0
+		logger.debug(f"Computing infrastructure score for path {path_nodes} with hops {hops}")
 		infrastructure = self.compute_infrastructure_score(path_nodes, db_manager, message)
 
 		# Path bonus: exact sender+path match in message_stats history
 		sender_id = getattr(message, 'sender_id', None)
+		logger.debug(f"Computing path bonus for sender_id {sender_id} and path {path_nodes}")
 		path_bonus = self.compute_path_bonus(sender_id, path_nodes, db_manager)
 
 		# Freshness: recency decay from message_stats history
 		sender_pubkey = getattr(message, 'sender_pubkey', None)
+		logger.debug(f"Computing freshness for sender_pubkey {sender_pubkey} and sender_id {sender_id}")
 		freshness = self.compute_freshness(sender_pubkey, sender_id, db_manager)
 
 		return hop_score, infrastructure, path_bonus, freshness
@@ -153,6 +156,7 @@ class CoordinatorScoring:
 		path_csv = ','.join(path_nodes).lower() if path_nodes else None
 		query = "SELECT Count(id) FROM message_stats WHERE sender_id = ? AND LOWER(path) = ? LIMIT 2"
 		result = db_manager.execute_query(query, (sender_id, path_csv))
+		logger.debug(f"Path bonus query result for sender_id {sender_id} and path_csv {path_csv}: {result}")
 		if len(result) > 1:
 			return 1.0  # History more than this message
 		return 0.0
@@ -170,12 +174,13 @@ class CoordinatorScoring:
 		from datetime import datetime, timedelta
 		now = datetime.now()
 		
-		def recency_calc(last_seen):
+		def recency_calc(now, timestamp:float):
+			#timestamp is an int seconds
 			try:
-				last_seen_dt = datetime.fromisoformat(last_seen)
+				timestamp_dt = datetime.fromtimestamp(timestamp)
 			except Exception:
 				return 0
-			age_hours = (now - last_seen_dt).total_seconds() / 3600.0
+			age_hours = (now - timestamp_dt).total_seconds() / 3600.0
 			return math.exp(-age_hours / 24.0)
 
 		try:
@@ -191,17 +196,20 @@ class CoordinatorScoring:
 			)
 			# Use integer timestamp for cutoff
 			cutoff_ts = int(cutoff.timestamp())
+			logger.debug(f"Computing freshness: querying message_stats for sender_id {sender_id} with cutoff_ts {cutoff_ts} and max {max_messages_considered}")
 			result = db_manager.execute_query(query, (sender_id, cutoff_ts, max_messages_considered))
 			if not result:
 				logger.warning(f"No recent messages sender_id {sender_id} with cutoff {cutoff_ts} and max {max_messages_considered} in message_stats")
 				raise Exception("No result or message_stats not available")
+			logger.debug(f"Freshness query result for sender_id {sender_id}: {result}")
 			recency_scores = []
 			for row in result:
 				timestamp = row.get('timestamp')
 				if timestamp:
-					recency = recency_calc(timestamp)
+					recency = recency_calc(now, float(timestamp))
 					recency_scores.append(recency)
 			if recency_scores:
+				logger.debug(f"Recency scores for sender_id {sender_id}: {recency_scores}")
 				fresh_sum = sum(recency_scores) * 0.33
 				# Cap at 1.0, recent rewarded, multiple rewarded but with diminishing returns
 				# Compatible with fallback 
@@ -209,9 +217,13 @@ class CoordinatorScoring:
 			return 0
 		except Exception:
 			# Fallback: use complete_contact_tracking, likely an advert time 
+			logger.debug(f"Freshness fallback triggered for sender_pubkey {sender_pubkey}")
 			query_complete_contact_tracking = "SELECT last_heard FROM complete_contact_tracking WHERE public_key LIKE ? AND role = 'companion' ORDER BY last_heard DESC LIMIT 1"
 			result = db_manager.execute_query(query_complete_contact_tracking, (f'{sender_pubkey}%',))
+			logger.debug(f"Freshness fallback query result for sender_pubkey {sender_pubkey}: {result}")
 			if result and 'last_seen' in result[0]:
 				last_seen = result[0]['last_seen']
-				return recency_calc(last_seen)
+				dt = datetime.strptime(last_seen, "%Y-%m-%d %H:%M:%S")
+				last_heard_seconds = dt.timestamp() #to match message_stats
+				return recency_calc(now, last_heard_seconds)
 		return 0
