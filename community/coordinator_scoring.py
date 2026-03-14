@@ -189,10 +189,10 @@ class CoordinatorScoring:
 				raise Exception("No sender_id available")
 			cutoff = now - timedelta(hours=relevance_time_window_hours)
 			
-			# Query up to max_messages recent messages from sender within window
+			# Query up to max_messages recent messages from sender within window grouped by 5-minute intervals to reduce 'rapid activity' bias.
 			query = (
-				"SELECT timestamp FROM message_stats WHERE sender_id = ? "
-				"AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?"
+				"SELECT MAX(timestamp) as timestamp FROM message_stats WHERE sender_id = ? "
+				"AND timestamp >= ? GROUP BY (timestamp / 300) ORDER BY timestamp DESC LIMIT ?"
 			)
 			# Use integer timestamp for cutoff
 			cutoff_ts = int(cutoff.timestamp())
