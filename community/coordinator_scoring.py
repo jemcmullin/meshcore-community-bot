@@ -183,7 +183,7 @@ class CoordinatorScoring:
 			if not sender_id:
 				raise Exception("No sender_id available")
 			cutoff = now - timedelta(hours=relevance_time_window_hours)
-
+			
 			# Query up to max_messages recent messages from sender within window
 			query = (
 				"SELECT timestamp FROM message_stats WHERE sender_id = ? "
@@ -193,6 +193,7 @@ class CoordinatorScoring:
 			cutoff_ts = int(cutoff.timestamp())
 			result = db_manager.execute_query(query, (sender_id, cutoff_ts, max_messages_considered))
 			if not result:
+				logger.warning(f"No recent messages sender_id {sender_id} with cutoff {cutoff_ts} and max {max_messages_considered} in message_stats")
 				raise Exception("No result or message_stats not available")
 			recency_scores = []
 			for row in result:
