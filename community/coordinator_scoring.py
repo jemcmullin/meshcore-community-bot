@@ -49,15 +49,15 @@ class CoordinatorScoring:
 		# Infrastructure: fan-in per node from mesh_connections, direct path if hops==0
 		infrastructure = self.compute_infrastructure_score(path_nodes, db_manager, message)
 
-		# Path bonus: exact sender+path match in observed_paths
-		sender_prefix = getattr(message, 'sender_prefix', None)
-		path_bonus = self.compute_path_bonus(sender_prefix, path_nodes, db_manager)
-
-		# Freshness: recency decay from observed_paths
+		# Path bonus: exact sender+path match in message_stats history
 		sender_id = getattr(message, 'sender_id', None)
-		path_freshness = self.compute_freshness(sender_prefix, sender_id, db_manager)
+		path_bonus = self.compute_path_bonus(sender_id, path_nodes, db_manager)
 
-		return hop_score, infrastructure, path_bonus, path_freshness
+		# Freshness: recency decay from message_stats history
+		sender_pubkey = getattr(message, 'sender_pubkey', None)
+		freshness = self.compute_freshness(sender_pubkey, sender_id, db_manager)
+
+		return hop_score, infrastructure, path_bonus, freshness
 
 	def compute_hop_score(self, hops):
 		'''Reward proximity. Less hops, higher delivery potential.'''
@@ -143,21 +143,21 @@ class CoordinatorScoring:
 			return hm
 		return 0.5
 
-	def compute_path_bonus(self, sender_prefix, path_nodes, db_manager):
+	def compute_path_bonus(self, sender_id, path_nodes, db_manager):
 		'''Reward if this sender+path seen before in message_stats. 
 		A lower confidence parallel of connectivity.
 		'''
-		if not sender_prefix or not path_nodes:
+		if not sender_id or not path_nodes:
 			return 0.0
 		# Convert path_nodes to CSV string for direct comparison
 		path_csv = ','.join(path_nodes).lower() if path_nodes else None
 		query = "SELECT Count(id) FROM message_stats WHERE sender_id = ? AND LOWER(path) = ? LIMIT 2"
-		result = db_manager.execute_query(query, (sender_prefix, path_csv))
+		result = db_manager.execute_query(query, (sender_id, path_csv))
 		if len(result) > 1:
 			return 1.0  # History more than this message
 		return 0.0
 
-	def compute_freshness(self, sender_prefix, sender_id, db_manager):
+	def compute_freshness(self, sender_pubkey, sender_id, db_manager):
 		'''Reward if this sender seen recently and frequently in message_stats.
 		A lower confidence parallel of connectivity. Biased by active users so keep weight low.
 		Freshness => 'Sender Recency' in this approach. Considered path based as alternative.
@@ -165,7 +165,7 @@ class CoordinatorScoring:
 		relevance_time_window_hours = 24
 		max_messages_considered = 5
 
-		if not sender_prefix:
+		if not sender_pubkey:
 			return 0
 		from datetime import datetime, timedelta
 		now = datetime.now()
@@ -210,7 +210,7 @@ class CoordinatorScoring:
 		except Exception:
 			# Fallback: use complete_contact_tracking, likely an advert time 
 			query_complete_contact_tracking = "SELECT last_heard FROM complete_contact_tracking WHERE public_key LIKE ? AND role = 'companion' ORDER BY last_heard DESC LIMIT 1"
-			result = db_manager.execute_query(query_complete_contact_tracking, (f'{sender_prefix}%',))
+			result = db_manager.execute_query(query_complete_contact_tracking, (f'{sender_pubkey}%',))
 			if result and 'last_seen' in result[0]:
 				last_seen = result[0]['last_seen']
 				return recency_calc(last_seen)
