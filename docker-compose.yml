@@ -9,7 +9,7 @@ services:
       - ./logs:/app/logs
     environment:
       - MESHCORE_CONNECTION_TYPE=${MESHCORE_CONNECTION_TYPE:-serial}
-      - MESHCORE_SERIAL_PORT=:-/dev/meshcore-usb
+      - MESHCORE_SERIAL_PORT=:/dev/meshcore-usb
       - MESHCORE_BOT_NAME=${MESHCORE_BOT_NAME:-CommunityBot}
       - MESHCORE_LATITUDE=${MESHCORE_LATITUDE:-}
       - MESHCORE_LONGITUDE=${MESHCORE_LONGITUDE:-}
