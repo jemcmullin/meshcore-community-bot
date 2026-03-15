@@ -159,6 +159,20 @@ The Web Viewer Community Page provides a real-time dashboard for monitoring bot 
 
 ### Implementation Overview
 
+## Why Full Scores Are Rare: Simple Explanation
+
+The scoring system is strict: it only gives full marks when every node in the path is strong. If even one node is weak, the score drops a lot. This helps us avoid unreliable routes and ensures the best-connected repeaters are prioritized.
+
+**Analogy:**
+Think of the delivery score like a relay race: every runner (node) must be fast for the team to win. If even one runner is slow, the team’s time suffers. The scoring system uses the harmonic mean, which penalizes weak links much more than the arithmetic mean.
+
+**Key Points:**
+
+- Strict reliability: The score rewards paths where every node is strong. One weak node sharply reduces the score.
+- Harmonic mean effect: Unlike a simple average, the harmonic mean is sensitive to low values. Even if most nodes are excellent, a single weak node drags the score down.
+- Full score is rare: Only paths where all nodes are highly connected and recent will approach the maximum score.
+- Purpose: This ensures the bot chooses the most reliable, robust paths—not just those with a few strong nodes.
+
 - Runs as a Flask+SocketIO web UI in its own thread (see `community/web_viewer_community_page.py`).
 - Receives coordination and DM events published from `MessageInterceptor`.
 - Top Repeaters section shows bots with highest delivery potential to this bot, based on meshcore-bot monitoring data and estimated score through this infrastructure.

@@ -88,7 +88,7 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
             <th title="Stored outbound hops from this bot to relay">Hops</th>
             <th title="Unique source nodes routing through this relay">Links</th>
             <th title="Time since relay last seen in mesh traffic">Last</th>
-            <th title="Estimated contribution to delivery score. Hops used to stand-in on hop score. Hover row for component breakdown.">Score<br>Contribution</th>
+            <th title="Estimated contribution to delivery score. Hops used to stand-in on hop score. Hover row for component breakdown.">Est.<br>Contribution</th>
           </tr></thead>
           <tbody id="repeaters"></tbody>
         </table>
@@ -181,6 +181,7 @@ async function refresh() {
     }
 
     const reps = data.top_repeaters;
+    const topSignificance = reps.length > 0 ? reps[0].significance : 0;
     document.getElementById('repeaters').innerHTML = reps.map(r => {
       const ah = r.age_hours;
       const statusColor = ah < 24 ? '#2d8a4e' : ah < 48 ? '#b07d1a' : '#888';
@@ -190,8 +191,21 @@ async function refresh() {
         ? '?' : oh === 0 ? 'direct' : `${oh} hop${oh > 1 ? 's' : ''}`;
       const lastSeen = ah === null || ah === undefined ? '?'
         : ah < 1 ? '<1h ago' : ah < 24 ? `${Math.floor(ah)}h ago` : `${Math.floor(ah/24)}d ago`;
-      const tip = `infra=${r.infra.toFixed(2)} hop=${r.hop_score.toFixed(2)} path_bonus=${r.path_bonus.toFixed(2)} fresh=${r.freshness.toFixed(2)}`;
       const name = r.name ? r.name : '';
+      let offsetStr;
+      if (r.significance === topSignificance) {
+        offsetStr = '---';
+      } else {
+        offsetStr = `-${(topSignificance - r.significance).toFixed(2)}`;
+      }
+      const tip = `infra=${r.infra.toFixed(2)} hop=${r.hop_score.toFixed(2)} difference-top= ${offsetStr}`;
+      let starCount = 1;
+      if (topSignificance > 0) {
+        starCount = Math.round((r.significance / topSignificance) * 5);
+        starCount = Math.max(1, Math.min(5, starCount)); // Clamp between 1 and 5
+      }
+      const stars = '☆'.repeat(starCount);
+
       return `
       <tr title="${tip}">
         <td class="mono">${r.node}</td>
@@ -200,7 +214,7 @@ async function refresh() {
         <td>${pathLabel}</td>
         <td>${r.fan_in}</td>
         <td>${lastSeen}</td>
-        <td>${r.significance.toFixed(2)}</td>
+        <td>${stars}</td>
       </tr>`;
     }).join('') || '<tr><td colspan="7">No repeater data</td></tr>';
     document.getElementById('repeaters-caption').textContent =
@@ -535,6 +549,12 @@ def _community_metrics_impl(viewer):
                 "stage_counts": stage_counts,
                 "avg_score": avg_score,
                 "recent_events": recent_events[:50],
+            },
+            "weights": {
+                "hop_weight": scoring_cfg.hop_weight,
+                "infrastructure_weight": scoring_cfg.infrastructure_weight,
+                "bonus_weight": scoring_cfg.path_bonus_weight,
+                "freshness_weight": scoring_cfg.freshness_weight,
             },
             "dm_stats": dm_stats,
         }
