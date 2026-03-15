@@ -130,6 +130,8 @@ Config via environment variables (`.env`) mapped to `config.ini` by `docker/entr
 ```bash
 # Clone
 git clone <repo-url>
+cd meshcore-community-bot
+git submodule update --init --recursive  # Pull meshcore-bot submodule
 
 # Local dev
 pip install -r requirements.txt
