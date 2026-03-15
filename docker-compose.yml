@@ -2,14 +2,14 @@ services:
   community-bot:
     build: .
     devices:
-      - "/dev/ttyUSB0:/dev/ttyUSB0"
+      - "${MESHCORE_SERIAL_PORT:-/dev/ttyUSB0}:/dev/meshcore-usb"
     volumes:
       - ./config.ini:/app/config.ini:rw
       - ./data:/app/data
       - ./logs:/app/logs
     environment:
       - MESHCORE_CONNECTION_TYPE=${MESHCORE_CONNECTION_TYPE:-serial}
-      - MESHCORE_SERIAL_PORT=${MESHCORE_SERIAL_PORT:-/dev/ttyUSB0}
+      - MESHCORE_SERIAL_PORT=/dev/meshcore-usb
       - MESHCORE_BOT_NAME=${MESHCORE_BOT_NAME:-CommunityBot}
       - MESHCORE_LATITUDE=${MESHCORE_LATITUDE:-}
       - MESHCORE_LONGITUDE=${MESHCORE_LONGITUDE:-}
