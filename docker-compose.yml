@@ -2,7 +2,7 @@ services:
   community-bot:
     build: .
     devices:
-      - "${MESHCORE_SERIAL_PORT}:/dev/meshcore-usb"
+      - "${MESHCORE_SERIAL_PORT:-/dev/ttyUSB0}:/dev/meshcore-usb"
     volumes:
       - ./config.ini:/app/config.ini:rw
       - ./data:/app/data
