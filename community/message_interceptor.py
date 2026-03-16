@@ -1,19 +1,26 @@
 """Intercepts bot responses to add coordinator-based coordination.
 
-Patches CommandManager.send_response() to check with the coordinator
-before sending any response on a channel. DMs bypass coordination.
+Patches CommandManager.send_response() and send_channel_message() 
+to check with the coordinator before sending a response on a channel. 
+`send_response` captures commands, `send_channel_message` captures keyword 
+messages that shortcut `send_response`. DMs bypass all coordination.
 Passes signal data (SNR, RSSI, hops, path) for path-quality-based bidding.
 Also reports messages to the PacketReporter for batch ingestion.
 """
 
 import logging
 import time
+import contextvars
+from typing import Tuple
 
 from .coordinator_client import CoordinatorClient
 from .coverage_fallback import CoverageFallback
 
 logger = logging.getLogger(__name__)
 
+# Tracking message for use in send_channel_message patch that would not have access otherwise
+current_message_var = contextvars.ContextVar('current_message')
+coordinated_var = contextvars.ContextVar('coordinated', default=False)
 
 class MessageInterceptor:
     """Intercepts send_response to coordinate with the central coordinator."""
@@ -24,33 +31,83 @@ class MessageInterceptor:
         self.fallback = fallback
         self.reporter = reporter
 
-        # Save reference to the original send_response
+        # Save reference to the original
+        self._original_process_message = bot.message_handler.process_message
+        self._original_send_channel_message = bot.command_manager.send_channel_message
         self._original_send_response = bot.command_manager.send_response
 
-        # Patch the command manager's send_response
+        # Patch meshcore-bot
+        bot.message_handler.process_message = self._wrapped_process_message
+        bot.command_manager.send_channel_message = self._coordinated_send_channel_message
         bot.command_manager.send_response = self._coordinated_send_response
 
         logger.info("Message interceptor installed on CommandManager.send_response")
 
+    async def _wrapped_process_message(self, message, *args, **kwargs):
+        '''Wrap process_message to set the current message in context for coordination.'''
+        token = current_message_var.set(message)
+        try:
+            return await self._original_process_message(message, *args, **kwargs)
+        finally:
+            current_message_var.reset(token)
+
+    async def _coordinated_send_channel_message(self, channel, content, command_id=None, skip_user_rate_limit=False, rate_limit_key=None):
+        '''Intercept send_channel_message calls, check with coordinator if keyword message,
+            and report message if it was a keyword message that called this directly.
+        '''
+        previously_coordinated = coordinated_var.get()
+        if not previously_coordinated: # Keyword Messages that call send_channel_message directly
+            try:
+                message = current_message_var.get()
+                should_send, message_hash = await self._coordinate_should_respond(message)
+                if not should_send:
+                    return True # silently suppress response and avoid error messages from meshcore-bot
+            except LookupError:
+                logger.warning('[COORDINATOR] send_channel_message no context, sending without coordination')
+
+        result = await self._original_send_channel_message(channel, content, command_id, skip_user_rate_limit, rate_limit_key)
+        
+        if not previously_coordinated: # Keyword Message not yet reported
+            await self._report_message(message=message if 'message' in locals() else None, bot_responded=result, message_hash=message_hash if 'message_hash' in locals() else "") # type: ignore
+        
+        return result
+    
     async def _coordinated_send_response(self, message, content: str) -> bool:
-        """Coordinated version of send_response.
+        """Intercept send_response calls, check with coordinator, and report message."""
 
-        For DMs: send immediately (no coordination needed).
-        For channel messages: check with coordinator first, passing signal data
-        for the bidding window to evaluate path quality.
+        should_send, message_hash = await self._coordinate_should_respond(message)
+        coordinated_var.set(True)
+
+        if should_send:
+            result = await self._original_send_response(message, content)
+        else:
+            result = False  # Did not send due to coordinator/fallback decision
+            
+        await self._report_message(message, bot_responded=result, message_hash=message_hash)
+        return result
+    
+    async def _coordinate_should_respond(self, message) -> Tuple[bool, str]:
         """
-        # DMs always go through - only this bot received the DM
-        if message.is_dm:
-            result = await self._original_send_response(message, content)
-            await self._report_message(message, bot_responded=result)
-            return result
+        Determine response to a message based on rules and coordinator decision.
 
-        # If coordinator is not configured, send immediately
-        if not self.coordinator.is_configured:
-            result = await self._original_send_response(message, content)
-            await self._report_message(message, bot_responded=result)
-            return result
+        Parameters
+        ----------
+        message : MeshMessage
+            The incoming MeshMessage object.
 
+        Returns
+        -------
+        should_respond : bool
+            True if this bot should respond, False otherwise.
+        message_hash : str
+            Unique hash for deduplication.
+
+        Notes
+        -----
+        - DMs: Always respond (no coordination needed).
+        - Channel messages: Check with coordinator, passing signal data for path-quality bidding.
+        - If coordinator unreachable: Use score-based fallback delay, then respond.
+        """
         # Compute message hash for deduplication
         timestamp = message.timestamp or int(time.time())
         message_hash = CoordinatorClient.compute_message_hash(
@@ -58,6 +115,14 @@ class MessageInterceptor:
             content=message.content or "",
             timestamp=timestamp,
         )
+
+        # DMs always go through - only this bot received the DM
+        if message.is_dm:
+            return True, message_hash
+
+        # If coordinator is not configured, send immediately
+        if not self.coordinator.is_configured:
+            return True, message_hash
 
         # Extract content prefix safely
         words = (message.content or "").split()
@@ -80,22 +145,17 @@ class MessageInterceptor:
         if should_respond is True:
             # Coordinator says we should respond
             logger.info(f"Coordinator assigned response to us for: {content_prefix}")
-            result = await self._original_send_response(message, content)
-            await self._report_message(message, bot_responded=result, message_hash=message_hash)
-            return result
+            return True, message_hash
 
         if should_respond is False:
             # Coordinator assigned to another bot
             logger.info(f"Coordinator assigned response to another bot for: {content_prefix}")
-            await self._report_message(message, bot_responded=False, message_hash=message_hash)
-            return True  # Return True so command doesn't report failure
+            return False, message_hash
 
         # should_respond is None - coordinator unreachable, use fallback
         logger.info("Coordinator unreachable, using score-based fallback")
         await self.fallback.wait_before_responding()
-        result = await self._original_send_response(message, content)
-        await self._report_message(message, bot_responded=result, message_hash=message_hash)
-        return result
+        return True, message_hash
 
     async def _report_message(self, message, bot_responded: bool = False, message_hash: str = ""):
         """Report the message to the PacketReporter for batch ingestion."""
