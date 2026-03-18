@@ -42,7 +42,7 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
   <style>
     :root { --bg:#f5f7f2; --ink:#1f2a1f; --card:#ffffff; --muted:#4c5b4c; --line:#d6ddd2; --a:#1f6f5f; }
     body { margin:0; font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; background:var(--bg); color:var(--ink); }
-    .wrap { max-width: 980px; margin: 24px auto; padding: 0 16px; }
+    .wrap { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
     h1 { margin: 0 0 12px; }
     .meta { color: var(--muted); margin-bottom: 16px; }
     .grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap: 12px; }
