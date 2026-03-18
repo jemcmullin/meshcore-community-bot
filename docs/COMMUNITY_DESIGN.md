@@ -28,7 +28,7 @@ delivery_score = (
   infrastructure * w_infrastructure
   + hop_score * w_hops
   + path_bonus * w_path_bonus
-  + path_freshness * w_freshness
+  + freshness * w_freshness
 )
 ```
 
@@ -39,13 +39,12 @@ Default weights from `ScoringConfig`:
 - `path_bonus_weight = 0.15`
 - `freshness_weight = 0.10`
 
-### Path Metrics
+### Path Metrics (CoordinatorScoring)
 
 Implemented in `CoordinatorScoring.get_path_metrics()` called from `MessageInterceptor`:
 
-- Returns tuple `(hop_score, infrastructure, path_bonus, path_freshness)`.
-- Path nodes parsed from `message.path` via `parse_path_nodes()`.
-- `path_hex` for exact match is built from parsed nodes (`"".join(path_nodes).lower()`).
+- Returns tuple `(hop_score, infrastructure, path_bonus, freshness)`.
+- Path nodes parsed from `message.path` (CSV or 'Direct').
 
 Hop score:
 
@@ -56,38 +55,41 @@ Infrastructure details:
 
 - For direct (hops == 0):
   - Use `message.snr` and `message.rssi` (normalized and blended).
+  - SNR normalized: $((snr + 15) / 30)$, RSSI normalized: $((rssi + 120) / 90)$, blended: $snr\_score * 0.7 + rssi\_score * 0.3$
   - If missing, default to `0.5` for each.
+  - **No min_signal_score threshold is applied for direct paths.**
 - For relayed:
-  - Query fan-in per path node: `COUNT(DISTINCT from_prefix)` grouped by `to_prefix`.
-  - Normalize each node: `log1p(fan_in) / log1p(max_fan_in)`.
-  - Build per-path node scores; missing node rows use neutral `0.5`.
-  - Combine node scores with harmonic mean.
-  - If no infrastructure rows are found, value remains `None` (later treated as `0.5`).
+  - Query fan-in per path node from `mesh_connections`.
+  - Deduplicate ambiguous prefix matches to prevent data from like prefix nodes from skewing scores, handle multi-byte transition.
+  - Normalize each node: $log1p(fan\_in) / log1p(max\_fan\_in)$.
+  - Combine node scores with harmonic mean (penalizes weak links).
+  - If signal quality (blended SNR/RSSI) is below `min_signal_score`, infrastructure score is halved.
+  - If no infrastructure rows are found, value defaults to `0.5`.
 
-Exact path bonus:
+Path bonus:
 
 - For direct (hops == 0): always `0.0` (no path familiarity bonus for direct).
-- For relayed: Query `observed_paths` for `LOWER(from_prefix)`, `LOWER(path_hex)`, and `packet_type='message'`. Exact row found => `1.0`, else `0.0`.
+- For relayed: Query `message_stats` for exact sender+path match. If found, `1.0`, else `0.0`.
 
 Freshness:
 
-- Query latest `last_seen` for sender in `observed_paths` with `packet_type='message'`.
-- Compute `exp(-age_hours / 24.0)`. If no observations, return `0.5`.
+- Query latest message timestamps for sender in `message_stats` (grouped by 5-minute intervals, up to 5 messages).
+- Compute $exp(-age\_hours / 24.0)$ for each, sum and scale, cap at 1.0.
+- If unavailable, fallback to `complete_contact_tracking` for last heard time.
+- If unknown, return `0`.
 
 ### Component specific details:
 
 - `hop_score = 1 / (1 + inbound_hops)` (or `0.5` if unknown)
 - `infrastructure`:
-  - For direct (hops == 0): computed from SNR and RSSI:
-    - SNR normalized to [0,1] from -15 to +15 dB: `(snr + 15) / 30`
-    - RSSI normalized to [0,1] from -120 to -30 dBm: `(rssi + 120) / 90`
-    - Blended: `infra_score = snr_score * 0.7 + rssi_score * 0.3`
-  - For relayed: harmonic mean of normalized fan-in per path node (see below)
+  - For direct (hops == 0): computed from SNR and RSSI (see above)
+  - For relayed: harmonic mean of normalized fan-in per path node, with ambiguous prefix deduplication
+  - If signal quality is below threshold, infrastructure is halved
   - If unknown: `0.5`
 - `path_bonus`:
   - For unknown or direct (hops == 0): always `0.0`
-  - For relayed: `1.0` if exact sender+path match in `observed_paths`, else `0.0`
-- `path_freshness = exp(-age_hours / 24.0)` or `0.5` if unknown
+  - For relayed: `1.0` if exact sender+path match in `message_stats`, else `0.0`
+- `freshness`: sum of recency scores, capped at 1.0, fallback to contact tracking if needed
 
 ## Data Sources
 

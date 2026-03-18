@@ -75,6 +75,7 @@ class ScoringConfig:
     degrade_target: float = 0.5
     degrade_window_seconds: int = 86400
     fallback_min_delivery_score: float = 0.30
+    min_signal_score: float = 0.30
 
     @classmethod
     def from_env_and_config(cls, config) -> "ScoringConfig":
@@ -98,4 +99,5 @@ class ScoringConfig:
             degrade_target=float(_get("degrade_target", 0.5)),
             degrade_window_seconds=int(_get("degrade_window_seconds", 86400)),
             fallback_min_delivery_score=float(_get("fallback_min_delivery_score", 0.30)),
+            min_signal_score=float(_get("min_signal_score", 0.30)),
         )

@@ -75,79 +75,89 @@ class CoordinatorScoring:
 		'''Reward incoming paths on well connected infrastructure as a higher confidence 
 		parallel of returning a message.
 		'''
-		# Direct path: no hops, score based on SNR/RSSI
+		
 		hops = getattr(message, 'hops', None)
+		
+		snr = getattr(message, 'snr', None)
+		rssi = getattr(message, 'rssi', None)
+		# Normalize SNR (assume -15 to +15 dB typical range)
+		snr_score = 0.5
+		if snr is not None:
+			snr_score = min(max((snr + 15) / 30.0, 0.0), 1.0)
+		# Normalize RSSI (assume -120 to -30 dBm typical range)
+		rssi_score = 0.5
+		if rssi is not None:
+			rssi_score = min(max((rssi + 120) / 90.0, 0.0), 1.0)
+		# Blend SNR/RSSI (weight SNR 70%, RSSI 30%)
+		signal_score = snr_score * 0.7 + rssi_score * 0.3
+
+		# Direct path: no hops, score based on SNR/RSSI
 		if hops is not None and hops == 0:
-			snr = getattr(message, 'snr', None)
-			rssi = getattr(message, 'rssi', None)
-			# Normalize SNR (assume -15 to +15 dB typical range)
-			snr_score = 0.5
-			if snr is not None:
-				snr_score = min(max((snr + 15) / 30.0, 0.0), 1.0)
-			# Normalize RSSI (assume -120 to -30 dBm typical range)
-			rssi_score = 0.5
-			if rssi is not None:
-				rssi_score = min(max((rssi + 120) / 90.0, 0.0), 1.0)
-			# Blend SNR/RSSI (weight SNR 70%, RSSI 30%)
-			infra_score = snr_score * 0.7 + rssi_score * 0.3
-			return infra_score
-
+			return signal_score
+		##########
 		# Not direct but no path info, assume average infrastructure
-		if not path_prefixes:
-			return 0.5
+		path_score = 0.5
 
-		# Score infrastructure based on fan-in of nodes in path
-		# The logic below became more complex to support transition from 2-byte to 4-byte (and longer) prefixes.
-		# It deduplicates ambiguous prefix/public key matches to prevent inflated infrastructure scores
-		# when prefixes overlap or multiple public keys share a prefix. This ensures each node is counted
-		# only once in almost all cases, regardless of prefix length or DB schema.
-		scores = []
-		max_fan_in = 1
-		for node_prefix in path_prefixes:
-			
-			# Fetch all relevant rows
-			query = """
-				SELECT from_prefix, from_public_key
-				FROM mesh_connections
-				WHERE (
-					(to_public_key IS NOT NULL AND to_public_key LIKE ?)
-					OR (to_public_key IS NULL AND to_prefix = ?)
-				)
-			"""
-			like_pattern = f'{node_prefix}%'  # Match public keys starting with node
-			rows = db_manager.execute_query(query, (like_pattern, node_prefix))
+		if path_prefixes:
+			# Score infrastructure based on fan-in of nodes in path
+			# The logic below became more complex to support transition from 2-byte to 4-byte (and longer) prefixes.
+			# It deduplicates ambiguous prefix/public key matches to prevent inflated infrastructure scores
+			# when prefixes overlap or multiple public keys share a prefix. This ensures each node is counted
+			# only once in almost all cases, regardless of prefix length or DB schema.
+			scores = []
+			max_fan_in = 1
+			for node_prefix in path_prefixes:
+				
+				# Fetch all relevant rows
+				query = """
+					SELECT from_prefix, from_public_key
+					FROM mesh_connections
+					WHERE (
+						(to_public_key IS NOT NULL AND to_public_key LIKE ?)
+						OR (to_public_key IS NULL AND to_prefix = ?)
+					)
+				"""
+				like_pattern = f'{node_prefix}%'  # Match public keys starting with node
+				rows = db_manager.execute_query(query, (like_pattern, node_prefix))
 
-			public_keys = set()
-			prefixes = []
+				public_keys = set()
+				prefixes = []
 
-			for row in rows:
-				public_key = row.get('from_public_key')
-				prefix = row.get('from_prefix')
-				if public_key:
-					public_keys.add(public_key)
-				elif prefix:
-					prefixes.append(prefix)
+				for row in rows:
+					public_key = row.get('from_public_key')
+					prefix = row.get('from_prefix')
+					if public_key:
+						public_keys.add(public_key)
+					elif prefix:
+						prefixes.append(prefix)
 
 
-			unique_ids = set(public_keys)
-			for prefix in prefixes:
-				matches = [pk for pk in public_keys if pk.startswith(prefix)]
-				if len(matches) == 1:
-					unique_ids.add(matches[0])  # count as the node
-				elif len(matches) == 0:
-					unique_ids.add(prefix)      # count as unique prefix node
-				# else: len(matches) > 1, ambiguous, ignore
+				unique_ids = set(public_keys)
+				for prefix in prefixes:
+					matches = [pk for pk in public_keys if pk.startswith(prefix)]
+					if len(matches) == 1:
+						unique_ids.add(matches[0])  # count as the node
+					elif len(matches) == 0:
+						unique_ids.add(prefix)      # count as unique prefix node
+					# else: len(matches) > 1, ambiguous, ignore
 
-			fan_in = len(unique_ids)
-			max_fan_in = max(max_fan_in, fan_in)
-			scores.append(fan_in)
-		# Normalize scores
-		norm_scores = [math.log1p(f) / math.log1p(max_fan_in) if max_fan_in > 0 else 0.5 for f in scores]
-		# Harmonic mean
-		if norm_scores:
-			hm = len(norm_scores) / sum(1.0 / (s if s > 0 else 0.5) for s in norm_scores)
-			return hm
-		return 0.5
+				fan_in = len(unique_ids)
+				max_fan_in = max(max_fan_in, fan_in)
+				scores.append(fan_in)
+			# Normalize scores
+			norm_scores = [math.log1p(f) / math.log1p(max_fan_in) if max_fan_in > 0 else 0.5 for f in scores]
+			# Harmonic mean to reward paths with consistently good fan-in across all nodes, rather than just one high fan-in node
+			if norm_scores:
+				path_score = len(norm_scores) / sum(1.0 / (s if s > 0 else 0.5) for s in norm_scores)
+		
+		# Signal quality threshold based downgrade. Threshold structure less sensitive to normal variations.
+		# Downrank bot with signal quality issue with their first hop.
+		if signal_score < self.config.min_signal_score:
+			infra_score = path_score * 0.5
+		else:
+			infra_score = path_score
+
+		return infra_score
 
 	def compute_path_bonus(self, sender_id, path_csv, db_manager):
 		'''Reward if this sender+path seen before in message_stats. 
