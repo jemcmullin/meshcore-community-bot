@@ -43,21 +43,24 @@ class CoordinatorScoring:
 		hop_score = self.compute_hop_score(hops)
 
 		# Path nodes, will be csv string or 'Direct', parse csv to list
-		path = getattr(message, 'path', None)
-		path_nodes = path.split(',') if path and path.lower() != 'direct' else []
+		path_csv = getattr(message, 'path', None)
+		logger.debug(f"[SCORING] Extracted path_csv from message: {path_csv}")
+		if path_csv and (path_csv.lower() == 'direct' or ',' in path_csv):
+			logger.warning(f"[SCORING] Path parsing assumes path is a CSV string or 'Direct'. Verify message.path format. Got: {path_csv}")
+		path_list = path_csv.split(',') if path_csv and path_csv.lower() != 'direct' else []
 
 		# Infrastructure: fan-in per node from mesh_connections, direct path if hops==0
-		logger.debug(f"Computing infrastructure score for path {path_nodes} with hops {hops}")
-		infrastructure = self.compute_infrastructure_score(path_nodes, db_manager, message)
+		logger.debug(f"[SCORING] Computing infrastructure score for path {path_list} with hops {hops}")
+		infrastructure = self.compute_infrastructure_score(path_list, db_manager, message)
 
 		# Path bonus: exact sender+path match in message_stats history
 		sender_id = getattr(message, 'sender_id', None)
-		logger.debug(f"Computing path bonus for sender_id {sender_id} and path {path_nodes}")
-		path_bonus = self.compute_path_bonus(sender_id, path_nodes, db_manager)
+		logger.debug(f"[SCORING] Computing path bonus for sender_id {sender_id} and path {path_csv}")
+		path_bonus = self.compute_path_bonus(sender_id, path_csv, db_manager)
 
 		# Freshness: recency decay from message_stats history
 		sender_pubkey = getattr(message, 'sender_pubkey', None)
-		logger.debug(f"Computing freshness for sender_pubkey {sender_pubkey} and sender_id {sender_id}")
+		logger.debug(f"[SCORING] Computing freshness for sender_pubkey {sender_pubkey} and sender_id {sender_id}")
 		freshness = self.compute_freshness(sender_pubkey, sender_id, db_manager)
 
 		return hop_score, infrastructure, path_bonus, freshness
@@ -146,15 +149,13 @@ class CoordinatorScoring:
 			return hm
 		return 0.5
 
-	def compute_path_bonus(self, sender_id, path_nodes, db_manager):
+	def compute_path_bonus(self, sender_id, path_csv, db_manager):
 		'''Reward if this sender+path seen before in message_stats. 
 		A lower confidence parallel of connectivity.
 		'''
-		if not sender_id or not path_nodes:
+		if not sender_id or not path_csv:
 			return 0.0
-		# Convert path_nodes to CSV string for direct comparison
-		path_csv = ','.join(path_nodes).lower() if path_nodes else None
-		query = "SELECT Count(id) FROM message_stats WHERE sender_id = ? AND LOWER(path) = ? LIMIT 2"
+		query = "SELECT COUNT(id) FROM message_stats WHERE sender_id = ? AND path = ? LIMIT 2"
 		result = db_manager.execute_query(query, (sender_id, path_csv))
 		logger.debug(f"Path bonus query result for sender_id {sender_id} and path_csv {path_csv}: {result}")
 		if len(result) > 1:
