@@ -94,12 +94,16 @@ class ScoringCommand(BaseCommand):
 
             # Radio-safe output: limit to 5 nodes, keep message short
             max_len = self.get_max_message_length(message)
-            lines = [f"{'Node':<4} {'Links':>5} {'Hops':>5} {'Score':>6}"]
+            lines = [f"{'Node':<4} {'Links':>5} {'Hops':>5} {'Scr(1-5)'}"]
+            max_sig = top_nodes[0][3] if top_nodes else 1.0  # Avoid division by zero
+
             for node, links, hops, sig in top_nodes[:5]:
                 hop_str = f"{hops}" if hops is not None else "?"
-                sig_str = f"{sig:.2f}"
+                # Calculate 1-5 rank
+                rank = round((sig / max_sig) * 5) if max_sig > 0 else 1
+                rank = max(1, min(5, rank))  # Clamp between 1 and 5
                 nodes_str = f"{node:<4}" if len(node) >= 4 else f"{node:<6}"
-                lines.append(f"{nodes_str} {str(links):>7} {str(hop_str):>7} {str(sig_str):>7}") # extra pad to compensate for font
+                lines.append(f"{nodes_str} {str(links):>5} {str(hop_str):>5} {str(rank):>4}") # extra pad to compensate for font
 
             if stale_nodes > 0:
                 lines = lines[:4]
