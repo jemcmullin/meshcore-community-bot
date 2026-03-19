@@ -1,5 +1,7 @@
 import math
 import logging
+import time
+from typing import Optional
 from .config import ScoringConfig
 
 logger = logging.getLogger('CommunityBot')
@@ -96,8 +98,8 @@ class CoordinatorScoring:
 			return signal_score
 		##########
 		# Not direct but no path info, assume average infrastructure
-		path_score = 0.5
-
+		infra_score = 0.5
+		
 		if path_prefixes:
 			# Score infrastructure based on fan-in of nodes in path
 			# The logic below became more complex to support transition from 2-byte to 4-byte (and longer) prefixes.
@@ -105,7 +107,6 @@ class CoordinatorScoring:
 			# when prefixes overlap or multiple public keys share a prefix. This ensures each node is counted
 			# only once in almost all cases, regardless of prefix length or DB schema.
 			scores = []
-			max_fan_in = 1
 			for node_prefix in path_prefixes:
 				
 				# Fetch all relevant rows
@@ -142,20 +143,36 @@ class CoordinatorScoring:
 					# else: len(matches) > 1, ambiguous, ignore
 
 				fan_in = len(unique_ids)
-				max_fan_in = max(max_fan_in, fan_in)
 				scores.append(fan_in)
-			# Normalize scores
-			norm_scores = [math.log1p(f) / math.log1p(max_fan_in) if max_fan_in > 0 else 0.5 for f in scores]
-			# Harmonic mean to reward paths with consistently good fan-in across all nodes, rather than just one high fan-in node
-			if norm_scores:
-				path_score = len(norm_scores) / sum(1.0 / (s if s > 0 else 0.5) for s in norm_scores)
+
+			# Calculate 80th percentile for normalization to reduce impact of outliers with very high fan-in
+			if scores:
+				query = """
+					SELECT COUNT(DISTINCT from_public_key) AS fan_in
+					FROM mesh_connections
+					WHERE from_public_key IS NOT NULL AND to_public_key IS NOT NULL
+					GROUP BY to_public_key
+					ORDER BY fan_in
+				"""
+				fan_in_rows = db_manager.execute_query(query)
+				fan_in_list = [row['fan_in'] for row in fan_in_rows if 'fan_in' in row]
+				# Use 90th percentile
+				percentile = 0.9
+				if fan_in_list:
+					fan_in_list.sort()
+					idx = int(math.ceil(percentile * len(fan_in_list))) - 1
+					idx = max(0, min(idx, len(fan_in_list) - 1))
+					norm_factor = max(3, fan_in_list[idx])
+				else:
+					norm_factor = 3
+				norm_scores = [min(1.0, math.log1p(f) / math.log1p(norm_factor)) for f in scores]
+				# Harmonic mean to reward paths with consistently good fan-in across all nodes, rather than just one high fan-in node
+				infra_score = len(norm_scores) / sum(1.0 / (s if s > 0 else 0.5) for s in norm_scores)
 		
-		# Signal quality threshold based downgrade. Threshold structure less sensitive to normal variations.
+		# Signal quality threshold. Threshold structure less influential to normal variations.
 		# Downrank bot with signal quality issue with their first hop.
-		if signal_score < self.config.min_signal_score:
-			infra_score = path_score * 0.5
-		else:
-			infra_score = path_score
+		if signal_score < self.config.min_signal_score: # Configurable, 0.3 default (snr ~ -5 dB, rssi ~ -100 dBm)
+			infra_score = infra_score * 0.5
 
 		return infra_score
 
@@ -165,10 +182,16 @@ class CoordinatorScoring:
 		'''
 		if not sender_id or not path_csv:
 			return 0.0
-		query = "SELECT COUNT(id) FROM message_stats WHERE sender_id = ? AND path = ? LIMIT 2"
-		result = db_manager.execute_query(query, (sender_id, path_csv))
-		logger.debug(f"Path bonus query result for sender_id {sender_id} and path_csv {path_csv}: {result}")
-		if len(result) > 1:
+		# Time filter is necessary because auto-cleanup (7 day default) only runs when stats command is executed.
+		# Old records may remain in the database if stats command is not run frequently.
+		# This filter ensures scoring always uses recent data, independent of cleanup schedule.
+		now = int(time.time())
+		week_ago = now - (7 * 24 * 60 * 60)
+		query = "SELECT COUNT(id) AS count FROM message_stats WHERE sender_id = ? AND path = ? AND timestamp >= ?"
+		result = db_manager.execute_query(query, (sender_id, path_csv, week_ago))
+		logger.debug(f"Path bonus query result for sender_id {sender_id}, path_csv {path_csv}, week_ago {week_ago}: {result}")
+		count = result[0].get('count', 0) if result else 0
+		if count > 1:
 			return 1.0  # History more than this message
 		return 0.0
 

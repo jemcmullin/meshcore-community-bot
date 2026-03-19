@@ -84,11 +84,11 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
           <thead><tr>
             <th>Top</th>
             <th>Name</th>
-            <th title="Active &lt;24h · Recent 24–48h · Stale &gt;48h">Status</th>
-            <th title="Stored outbound hops from this bot to relay">Hops</th>
+            <th title="Active &lt;24h · Recent 24-48h · Stale &gt;48h">Status</th>
+            <th title="Hops to bot from last advert. Est. for messages traversing this relay">Advert<br>Hops</th>
             <th title="Unique source nodes routing through this relay">Links</th>
             <th title="Time since relay last seen in mesh traffic">Last</th>
-            <th title="Estimated contribution to delivery score. Hops used to stand-in on hop score. Hover row for component breakdown.">Est.<br>Contribution</th>
+            <th title="Estimated contribution to delivery score. Hops used to stand-in on hop score. Hover row for component breakdown.">Est.<br>Importance</th>
           </tr></thead>
           <tbody id="repeaters"></tbody>
         </table>
@@ -224,9 +224,9 @@ async function refresh() {
       <tr>
         <!-- Timestamp is already local time from the database, so display as-is without timezone conversion -->
         <td>${new Date(e.timestamp * 1000).toLocaleTimeString('en-US', { hour12: true })}</td>
-        <td class=\"mono\">${e.stage}</td>
+           <td>${e.stage}</td>
         <td>${e.score === null ? 'n/a' : e.score.toFixed(3)}</td>
-        <td class=\"mono\">${e.summary}</td>
+           <td>${e.summary}</td>
       </tr>
     `).join('') || '<tr><td colspan=\"4\">No recent coordination events</td></tr>';
   } catch (err) {
@@ -380,17 +380,35 @@ def _community_metrics_impl(viewer):
             )
             GROUP BY node
             ORDER BY fan_in DESC
-            LIMIT 50
+            LIMIT 100
             """
           )
           rows = cur.fetchall()
-          max_fan_in = max(int(rows[0]["max_fan_in"] if "max_fan_in" in rows[0].keys() else 1), 1) if rows else 1
-          log_max_fan = math.log1p(max_fan_in)
+
+          # --- Updated infra score logic to match coordinator_scoring.py ---
+          # Gather all fan_in values for normalization (deduplication logic)
+          node_fanins = []
+          for r in rows:
+            fan_in = int(r["fan_in"] if "fan_in" in r.keys() else 0)
+            node_fanins.append(fan_in)
+          # Calculate 90th percentile normalization factor (as in coordinator_scoring.py)
+          percentile = 0.9
+          sorted_fanins = sorted(node_fanins)
+          if sorted_fanins:
+            idx = int(math.ceil(percentile * len(sorted_fanins))) - 1
+            idx = max(0, min(idx, len(sorted_fanins) - 1))
+            norm_factor = max(3, sorted_fanins[idx])
+          else:
+            norm_factor = 3
+
           for r in rows:
             fan_in = int(r["fan_in"] if "fan_in" in r.keys() else 0)
             out_hops = r["out_hops"] if "out_hops" in r.keys() else None
             age_hours = float(r["age_hours"] if "age_hours" in r.keys() else 999)
-            infra = math.log1p(fan_in) / log_max_fan
+            # Normalize fan_in using log1p and norm_factor (as in coordinator_scoring.py)
+            norm_score = min(1.0, math.log1p(fan_in) / math.log1p(norm_factor))
+            # For a single node, harmonic mean is just the value itself
+            infra = norm_score
             hop_score = 0.25 if out_hops is None else (1.0 / (1 + out_hops))
             path_bonus = 0.0
             freshness = math.exp(-age_hours / 24.0)
@@ -416,9 +434,7 @@ def _community_metrics_impl(viewer):
             )
           # Re-sort by significance (SQL ordered by fan_in; significance order differs)
           top_repeaters.sort(key=lambda x: x["significance"], reverse=True)
-          top_repeaters = top_repeaters[:10]
-          if top_repeaters:
-            top_repeaters[0]["_max_fan_in"] = max_fan_in
+          top_repeaters = top_repeaters[:15]  # Keep top 15 for display
 
         # Last 24 hrs of coordination snapshots injected by community layer
         if "packet_stream" in tables:

@@ -52,7 +52,7 @@ class ScoringCommand(BaseCommand):
                     )
                     GROUP BY node
                     ORDER BY fan_in DESC
-                    LIMIT 20
+                    LIMIT 100
                     """
                 )
 
@@ -62,42 +62,57 @@ class ScoringCommand(BaseCommand):
                 await self.send_response(message, "No infrastructure data yet. Wait for mesh traffic.")
                 return True
 
+
             top_nodes = []
             stale_nodes = 0
             import math
-            # Calculate max_fan_in and log_max_fan for normalization
-            max_fan_in = max(int(infra_rows[0]["max_fan_in"] or 1), 1) if infra_rows else 1
-            log_max_fan = math.log1p(max_fan_in)
+            # Gather all fan_in values for normalization (deduplication logic)
+            node_fanins = []
+            for row in infra_rows:
+                fan_in = int(row.get("fan_in") or 0)
+                node_fanins.append(fan_in)
+            # Calculate 90th percentile normalization factor (as in coordinator_scoring.py)
+            percentile = 0.9
+            sorted_fanins = sorted(node_fanins)
+            if sorted_fanins:
+                idx = int(math.ceil(percentile * len(sorted_fanins))) - 1
+                idx = max(0, min(idx, len(sorted_fanins) - 1))
+                norm_factor = max(3, sorted_fanins[idx])
+            else:
+                norm_factor = 3
 
             for row in infra_rows:
                 node_val = row.get("node") or ""
                 node = node_val.upper().replace("!", "")[:4]
                 fan_in = int(row.get("fan_in") or 0)
                 age_hours = float(row.get("age_hours") or 999)
-                if age_hours > 48:
-                    stale_nodes += 1
-                    continue # Skip in this list once counted as stale
+                
                 hops = row.get("out_hops")
                 # Calculate scoring components
-                infra = math.log1p(fan_in) / log_max_fan if log_max_fan > 0 else 0.0
+                infra = min(1.0, math.log1p(fan_in) / math.log1p(norm_factor))
                 hop_score = 0.25 if hops is None else (1.0 / (1 + hops))
-                path_bonus = 0.0
-                freshness = math.exp(-age_hours / 24.0)
+                # path_bonus = 0.0
+                # freshness = math.exp(-age_hours / 24.0)
                 significance = (
                     infra * scoring_cfg.infrastructure_weight +
                     hop_score * scoring_cfg.hop_weight
                 )
-                
-                top_nodes.append((node, fan_in, hops, significance))
-            
+                top_nodes.append((node, fan_in, hops, significance, age_hours))
+
             top_nodes.sort(key=lambda x: x[3], reverse=True)  # Sort by significance
+            top_nodes = top_nodes[:20]  # Keep top 20 for stale filtering
+            # Count and remove stale nodes (not seen in 48+ hours)
+            for i in range(len(top_nodes)-1, -1, -1):
+                if top_nodes[i][4] > 48:
+                    stale_nodes += 1
+                    del top_nodes[i]
 
             # Radio-safe output: limit to 5 nodes, keep message short
             max_len = self.get_max_message_length(message)
             lines = [f"{'Node'}|{'Links'}|{'Hops'}|{'Scr(1-5)'}"]
             max_sig = top_nodes[0][3] if top_nodes else 1.0  # Avoid division by zero
 
-            for node, links, hops, sig in top_nodes[:5]:
+            for node, links, hops, sig, age_hours in top_nodes[:5]:
                 hop_str = f"{hops}" if hops is not None else "?"
                 # Calculate 1-5 rank
                 rank = round((sig / max_sig) * 5) if max_sig > 0 else 1
@@ -106,7 +121,7 @@ class ScoringCommand(BaseCommand):
                 lines.append(f"{nodes_str} {str(links):>5} {str(hop_str):>5} {str(rank):>5}") # extra pad to compensate for font
 
             if stale_nodes > 0:
-                lines = lines[:4]
+                lines = lines[:5] # Keep only header + top 4 nodes to make room for stale count
                 lines.append(f"Stale: {stale_nodes}")
 
             text = "\n".join(lines)
