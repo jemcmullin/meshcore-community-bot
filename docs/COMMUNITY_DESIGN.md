@@ -2,6 +2,38 @@
 
 This document reflects the code to design in `community/`.
 
+## Rationale: Why Incoming Data Is Used
+
+The scoring system is designed to select the bot most likely to transmit reliably back to the original sender. A reliable mesh-based feedback mechanism was not identified to directly assess outgoing message effectiveness on channels. While tracking heard repeats was considered, it is highly dependent on a bot radio’s location; a colocated repeater may be the only path in or out, making this metric unreliable. As a result, all scoring and analysis is based on the bot observing mesh traffic, tracking repeater links from paths, and receiving incoming messages.
+
+Incoming data is used as a proxy for delivery potential, under the assumption that if a bot receives messages well from a sender, it likely has a good return path. While mesh topology can be asymmetric and incoming quality does not always guarantee outgoing reliability, this is the best available proxy given current mesh protocol constraints.
+
+**Limitations:**
+
+- Outgoing effectiveness cannot be measured directly; scoring relies on incoming path quality, signal, and activity as correlated indicators.
+- Asymmetric links or mesh routing quirks may cause occasional mismatches, but the scoring logic is as optimal as possible given available data.
+
+## Analogy: Relay Race and Harmonic Mean
+
+Think of the delivery score like a relay race: every runner (node) must be fast for the team to win. If even one runner is slow, the team’s time suffers. The scoring system uses the harmonic mean, which penalizes weak links much more than the arithmetic mean. This ensures the bot chooses the most reliable, robust paths—not just those with a few strong nodes.
+
+**Key Points:**
+
+- Strict reliability: The score rewards paths where every node is strong. One weak node sharply reduces the score.
+- Harmonic mean effect: Unlike a simple average, the harmonic mean is sensitive to low values. Even if most nodes are excellent, a single weak node drags the score down.
+- Full score is rare: Only paths where all nodes are highly connected and recent will approach the maximum score.
+- Purpose: This ensures the bot chooses the most reliable, robust paths—not just those with a few strong nodes.
+
+## Scoring as Proxy for Delivery Potential
+
+The scoring formula is optimized for the right variables given the constraints:
+
+- **Infrastructure and proximity** are dominant, maximizing delivery reliability and minimizing path length.
+- **Historical and recent sender contact** are secondary, rewarding familiarity and activity.
+- Fallback values are balanced to avoid penalizing bots with incomplete data.
+
+This approach is justified and the best practical method for the goal of reliable message delivery, given the lack of outgoing feedback.
+
 ## Scope
 
 - Applies only to community layer code.
@@ -103,7 +135,8 @@ Message fields:
 DB tables:
 
 - `mesh_connections` for infrastructure fan-in
-- `observed_paths` for exact-path bonus and freshness
+- `message_stats` for exact sender+path match (path bonus) and sender recency (freshness)
+- Fallback: `complete_contact_tracking` for freshness based on advert if `message_stats` unavailable
 
 Not used for delivery scoring:
 
@@ -152,28 +185,19 @@ In `CoverageFallback.compute_delay_ms_with_signal()`:
 - `degrade_after_seconds`
 - `degrade_target`
 - `degrade_window_seconds`
+- `min_signal_score`
+
+## Why Full Scores Are Rare: Simple Explanation
+
+The scoring system is strict: it only gives full marks when every node in the path is strong. If even one node is weak, the score drops a lot. This helps avoid unreliable routes and ensures the best-connected repeaters are prioritized. See the relay race and harmonic mean analogy in the "Rationale: Why Incoming Data Is Used" section above for further context.
 
 ## Web Viewer Community Page
 
 ### Summary
 
-The Web Viewer Community Page provides a real-time dashboard for monitoring bot coordination, delivery scoring, and repeater significance to this bot. It lists coordination decisions and fallback events.
+The Web Viewer Community Page provides a real-time dashboard for monitoring bot coordination, delivery scoring, and repeater significance to this bot. It lists coordination decisions, fallback events, and suppression events (when bots are silenced due to low delivery score in fallback mode).
 
 ### Implementation Overview
-
-## Why Full Scores Are Rare: Simple Explanation
-
-The scoring system is strict: it only gives full marks when every node in the path is strong. If even one node is weak, the score drops a lot. This helps us avoid unreliable routes and ensures the best-connected repeaters are prioritized.
-
-**Analogy:**
-Think of the delivery score like a relay race: every runner (node) must be fast for the team to win. If even one runner is slow, the team’s time suffers. The scoring system uses the harmonic mean, which penalizes weak links much more than the arithmetic mean.
-
-**Key Points:**
-
-- Strict reliability: The score rewards paths where every node is strong. One weak node sharply reduces the score.
-- Harmonic mean effect: Unlike a simple average, the harmonic mean is sensitive to low values. Even if most nodes are excellent, a single weak node drags the score down.
-- Full score is rare: Only paths where all nodes are highly connected and recent will approach the maximum score.
-- Purpose: This ensures the bot chooses the most reliable, robust paths—not just those with a few strong nodes.
 
 - Runs as a Flask+SocketIO web UI in its own thread (see `community/web_viewer_community_page.py`).
 - Receives coordination and DM events published from `MessageInterceptor`.
@@ -186,7 +210,7 @@ Think of the delivery score like a relay race: every runner (node) must be fast 
 ## Future Improvement Option (not initial implementation): Bidirectional Bonus Scoring
 
 **Overview:**
-Add a bidirectional bonus to the delivery scoring equation, rewarding bots whose path segments are confirmed bidirectional (i.e., both directions observed in mesh graph).
+Add a bidirectional bonus to the delivery scoring equation, rewarding bots whose path segments are bidirectional (i.e., both directions observed in mesh graph). This is a base meshcore-bot function in the mesh graph monitoring, however a bi-directional result has yet to be seen. This would enhance the scoring model by giving a boost to bots with assumed stronger two-way connectivity, which is a key indicator of reliable delivery potential.
 
 **Proposed Equation:**
 delivery_score = base_score + 0.10 \* bidirectional_score
