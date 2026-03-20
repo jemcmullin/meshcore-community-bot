@@ -42,13 +42,13 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
   <style>
     :root { --bg:#f5f7f2; --ink:#1f2a1f; --card:#ffffff; --muted:#4c5b4c; --line:#d6ddd2; --a:#1f6f5f; }
     body { margin:0; font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; background:var(--bg); color:var(--ink); }
-    .wrap { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
+    .wrap { max-width: 1000px; margin: 24px auto; padding: 0 16px; }
     h1 { margin: 0 0 12px; }
     .meta { color: var(--muted); margin-bottom: 16px; }
     .grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap: 12px; }
     .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; }
     table { width:100%; border-collapse: collapse; }
-    th, td { text-align:left; padding:6px; border-bottom:1px solid var(--line); font-size:14px; }
+    th, td { text-align:left; padding:6px; border-bottom:1px solid var(--line); font-size:12px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#eaf2ea; border:1px solid var(--line); margin-right:6px; margin-bottom:6px; font-size:12px; }
     nav { background:var(--card); border-bottom:1px solid var(--line); padding:0 16px; display:flex; gap:16px; align-items:center; }
@@ -172,7 +172,8 @@ async function refresh() {
       if (dm.bottom_users && dm.bottom_users.length > 0) {
         dmHtml += '<div style=\"margin-top:6px;font-size:12px;color:var(--muted)\"><b>Needs attention:</b></div>';
         dm.bottom_users.forEach(u => {
-          const statusColor = u.rate >= 80 ? '#2d8a4e' : u.rate >= 50 ? '#b07d1a' : '#c44';
+          if (u.rate >= 70) return; // Only highlight users with delivery rate below 70%
+          const statusColor = u.rate >= 30 ? '#b07d1a' : '#990000';
           dmHtml += `<div style=\"font-size:11px\"><span style=\"color:${statusColor};font-weight:bold\">${u.rate}%</span> ${u.user} (${u.delivered}/${u.sent})</div>`;
         });
       }
@@ -388,9 +389,13 @@ def _community_metrics_impl(viewer):
           # --- Updated infra score logic to match coordinator_scoring.py ---
           # Gather all fan_in values for normalization (deduplication logic)
           node_fanins = []
+          node_hops = []
           for r in rows:
             fan_in = int(r["fan_in"] if "fan_in" in r.keys() else 0)
             node_fanins.append(fan_in)
+            out_hops = r["out_hops"] if "out_hops" in r.keys() else None
+            node_hops.append(out_hops)
+          max_hops = max([h for h in node_hops if h is not None], default=0)
           # Calculate 90th percentile normalization factor (as in coordinator_scoring.py)
           percentile = 0.9
           sorted_fanins = sorted(node_fanins)
@@ -409,7 +414,8 @@ def _community_metrics_impl(viewer):
             norm_score = min(1.0, math.log1p(fan_in) / math.log1p(norm_factor))
             # For a single node, harmonic mean is just the value itself
             infra = norm_score
-            hop_score = 0.25 if out_hops is None else (1.0 / (1 + out_hops))
+            max_hop_score = (1.0 / (1 + max_hops)) if max_hops > 0 else 0.1
+            hop_score = (1.0 / (1 + out_hops)) if out_hops is not None else max_hop_score
             path_bonus = 0.0
             freshness = math.exp(-age_hours / 24.0)
             significance = (

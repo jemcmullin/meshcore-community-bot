@@ -66,11 +66,14 @@ class ScoringCommand(BaseCommand):
             top_nodes = []
             stale_nodes = 0
             import math
-            # Gather all fan_in values for normalization (deduplication logic)
+            # Gather all fan_in values and hops for normalization
             node_fanins = []
+            node_hops = []
             for row in infra_rows:
                 fan_in = int(row.get("fan_in") or 0)
                 node_fanins.append(fan_in)
+                hops = row.get("out_hops")
+                node_hops.append(hops)
             # Calculate 90th percentile normalization factor (as in coordinator_scoring.py)
             percentile = 0.9
             sorted_fanins = sorted(node_fanins)
@@ -81,16 +84,19 @@ class ScoringCommand(BaseCommand):
             else:
                 norm_factor = 3
 
+            # Calculate max hops (excluding None)
+            max_hops = max([h for h in node_hops if h is not None], default=0)
+            max_hop_score = (1.0 / (1 + max_hops)) if max_hops > 0 else 0.1
+
             for row in infra_rows:
                 node_val = row.get("node") or ""
                 node = node_val.upper().replace("!", "")[:4]
                 fan_in = int(row.get("fan_in") or 0)
                 age_hours = float(row.get("age_hours") or 999)
-                
                 hops = row.get("out_hops")
                 # Calculate scoring components
                 infra = min(1.0, math.log1p(fan_in) / math.log1p(norm_factor))
-                hop_score = 0.25 if hops is None else (1.0 / (1 + hops))
+                hop_score = (1.0 / (1 + hops)) if hops is not None else max_hop_score
                 # path_bonus = 0.0
                 # freshness = math.exp(-age_hours / 24.0)
                 significance = (
