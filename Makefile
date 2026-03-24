@@ -8,7 +8,7 @@ build: submodule
 	docker compose build
 
 up: submodule
-	docker compose up -d
+	docker compose up -d --build
 
 down:
 	docker compose down
@@ -21,4 +21,4 @@ start: up logs
 pull:
 	git pull
 
-redeploy: down pull build start
+redeploy: pull start
