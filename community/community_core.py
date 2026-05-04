@@ -8,7 +8,6 @@ Inherits from MeshCoreBot and adds:
 """
 
 import asyncio
-import configparser
 import importlib
 import importlib.util
 import inspect
@@ -26,9 +25,9 @@ from community.web_viewer_patch import patch_web_viewer_integration
 from modules.commands.base_command import BaseCommand
 from modules.core import MeshCoreBot
 
-from .config import CoordinatorConfig, ScoringConfig
+from .config import CoordinatorConfig
 from .coordinator_client import CoordinatorClient
-from .coverage_fallback import CoverageFallback
+from .response_timing import ResponseTiming
 from .message_interceptor import MessageInterceptor
 from .packet_reporter import PacketReporter
 
@@ -72,20 +71,6 @@ class CommunityBot(MeshCoreBot):
             f"mesh_region={self.coordinator_config.mesh_region}"
         )
 
-        # Load scoring config
-        scoring_config_path = Path(__file__).parent / "scoring_config.ini"
-        scoring_config_object = configparser.ConfigParser()
-        scoring_config_object.read(scoring_config_path)
-        self.scoring_config = ScoringConfig.from_env_and_config(scoring_config_object)
-        self.logger.info('Scoring config loaded')
-        self.logger.debug(
-            "Scoring weights loaded: infra=%.2f hops=%.2f path_bonus=%.2f freshness=%.2f",
-            self.scoring_config.infrastructure_weight,
-            self.scoring_config.hop_weight,
-            self.scoring_config.path_bonus_weight,
-            self.scoring_config.freshness_weight,
-        )
-
         # ------------------------------------------------------------------------
         # Community Bot Initialization
         # ------------------------------------------------------------------------
@@ -98,8 +83,8 @@ class CommunityBot(MeshCoreBot):
             registration_key=self.coordinator_config.registration_key,
         )
 
-        # Initialize fallback
-        self.coverage_fallback = CoverageFallback()
+        # Initialize response timing
+        self.response_timing = ResponseTiming()
 
         # Initialize packet reporter
         self.packet_reporter = PacketReporter(
@@ -112,7 +97,7 @@ class CommunityBot(MeshCoreBot):
         self.message_interceptor = MessageInterceptor(
             bot=self,
             coordinator=self.coordinator,
-            fallback=self.coverage_fallback,
+            timing=self.response_timing,
             reporter=self.packet_reporter,
         )
 
@@ -338,10 +323,6 @@ class CommunityBot(MeshCoreBot):
                     contact_count=contact_count,
                     channel_count=channel_count,
                 )
-
-                if success:
-                    # Update fallback score
-                    self.coverage_fallback.update_score(self.coordinator.current_score)
             except asyncio.CancelledError:
                 raise
             except Exception as e:

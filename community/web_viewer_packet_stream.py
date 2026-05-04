@@ -3,7 +3,6 @@ import json
 import sqlite3
 import time
 import logging
-from typing import Optional
 
 logger = logging.getLogger('WebViewerPacketStream')
 
@@ -56,14 +55,13 @@ async def publish_web_viewer_coordination_event(
     message,
     message_hash: str,
     stage: str,
-    delivery_score: float,
-    hop_component: Optional[float] = None,
-    infra_component: Optional[float] = None,
-    path_bonus_component: Optional[float] = None,
-    freshness_component: Optional[float] = None,
+    winner_name: str = "",
+    winner_score: float = 0.0,
+    reason: str = "",
+    delay_ms: int = 0,
 ):
     """
-    Publish coordination score snapshots to web viewer command stream.
+    Publish coordination stage snapshots to web viewer command stream.
     Uses existing BotIntegration.capture_command() so no submodule changes are required.
     """
     wvi = getattr(bot, "web_viewer_integration", None)
@@ -72,19 +70,20 @@ async def publish_web_viewer_coordination_event(
 
     sender_id = getattr(message, 'sender_id', None)
 
-    summary_parts = [f"stage={stage}", f"score={delivery_score:.2f}"]
+    summary_parts = [f"stage={stage}"]
     if sender_id is not None:
         summary_parts.append(f"sender={sender_id}")
-    if stage == 'bid':
-        summary_parts.append("| Comp:")
-    if hop_component is not None:
-        summary_parts.append(f"hop={hop_component:.2f}")
-    if infra_component is not None:
-        summary_parts.append(f"infra={infra_component:.2f}")
-    if path_bonus_component is not None:
-        summary_parts.append(f"path_bonus={path_bonus_component:.2f}")
-    if freshness_component is not None:
-        summary_parts.append(f"fresh={freshness_component:.2f}")
+    hops = getattr(message, 'hops', None)
+    if hops is not None:
+        summary_parts.append(f"hops={hops}")
+    if winner_name:
+        summary_parts.append(f"winner={winner_name}")
+    if winner_score:
+        summary_parts.append(f"score={winner_score:.3f}")
+    if reason:
+        summary_parts.append(f"reason={reason}")
+    if delay_ms:
+        summary_parts.append(f"delay={delay_ms}ms")
     summary = " ".join(summary_parts)
 
     command_id = f"coord:{message_hash[:12]}"

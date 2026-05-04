@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
 import sqlite3
 import sys
@@ -79,7 +78,14 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
         <div id=\"dm-stats\"></div>
       </section>
       <section class=\"card\" style=\"grid-column: 1/-1;\">
-        <h3>Top Repeaters <span style="font-size:12px;color:var(--muted);">(this bot's bid scoring perspective)</span></h3>
+        <h3>Recent Coordination Events</h3>
+        <table>
+          <thead><tr><th>Time</th><th>Stage</th><th>Details</th></tr></thead>
+          <tbody id=\"events\"></tbody>
+        </table>
+      </section>
+      <section class=\"card\" style=\"grid-column: 1/-1;\">
+        <h3>Top Repeaters</h3>
         <table>
           <thead><tr>
             <th>Top</th>
@@ -88,18 +94,10 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
             <th title="Hops to bot from last advert. Est. for messages traversing this relay">Advert<br>Hops</th>
             <th title="Unique source nodes routing through this relay">Links</th>
             <th title="Time since relay last seen in mesh traffic">Last</th>
-            <th title="Estimated contribution to delivery score. Hops used to stand-in on hop score. Hover row for component breakdown.">Est.<br>Importance</th>
           </tr></thead>
           <tbody id="repeaters"></tbody>
         </table>
         <p id="repeaters-caption" style="font-size:12px;color:var(--muted);margin:6px 0 0;"></p>
-      </section>
-      <section class=\"card\" style=\"grid-column: 1/-1;\">
-        <h3>Recent Bid Events</h3>
-        <table>
-          <thead><tr><th>Time</th><th>Stage</th><th>Bid\nScore</th><th>Details</th></tr></thead>
-          <tbody id=\"events\"></tbody>
-        </table>
       </section>
     </div>
   </div>
@@ -129,18 +127,15 @@ async function refresh() {
     const total = sc.bid || 0;
     const won = sc.assigned_us || 0;
     const lost = sc.assigned_other || 0;
-    const fallback = sc.fallback || 0;
+    const fallback = sc.fallback_sent || 0;
     const winRate = total > 0 ? ((won / total) * 100).toFixed(0) : 0;
     const fallbackRate = total > 0 ? ((fallback / total) * 100).toFixed(0) : 0;
-    const avgScore = coord.avg_score !== null && coord.avg_score !== undefined ? coord.avg_score.toFixed(3) : 'n/a';
-    
     if (total === 0) {
       document.getElementById('coord').innerHTML = '<div style=\"color:var(--muted)\">No coordination events in last hour</div>';
     } else {
       document.getElementById('coord').innerHTML = `
         <div><b>Bids:</b> ${total} (won ${won}, lost ${lost})</div>
         <div><b>Win rate:</b> ${winRate}%</div>
-        <div><b>Avg score:</b> ${avgScore}</div>
         <div><b>Fallback:</b> ${fallback} (${fallbackRate}%)</div>
       `;
     }
@@ -181,7 +176,6 @@ async function refresh() {
     }
 
     const reps = data.top_repeaters;
-    const topSignificance = reps.length > 0 ? reps[0].significance : 0;
     document.getElementById('repeaters').innerHTML = reps.map(r => {
       const ah = r.age_hours;
       const statusColor = ah < 24 ? '#2d8a4e' : ah < 48 ? '#b07d1a' : '#888';
@@ -192,19 +186,7 @@ async function refresh() {
       const lastSeen = ah === null || ah === undefined ? '?'
         : ah < 1 ? '<1h ago' : ah < 24 ? `${Math.floor(ah)}h ago` : `${Math.floor(ah/24)}d ago`;
       const name = r.name ? r.name : '';
-      let offsetStr;
-      if (r.significance === topSignificance) {
-        offsetStr = '---';
-      } else {
-        offsetStr = `-${(topSignificance - r.significance).toFixed(2)}`;
-      }
-      const tip = `infra=${r.infra.toFixed(2)} hop=${r.hop_score.toFixed(2)} difference-top= ${offsetStr}`;
-      let starCount = 1;
-      if (topSignificance > 0) {
-        starCount = Math.round((r.significance / topSignificance) * 5);
-        starCount = Math.max(1, Math.min(5, starCount)); // Clamp between 1 and 5
-      }
-      const stars = '☆'.repeat(starCount);
+      const tip = `hop_score=${r.hop_score.toFixed(2)}`;
 
       return `
       <tr title="${tip}">
@@ -214,21 +196,33 @@ async function refresh() {
         <td>${pathLabel}</td>
         <td>${r.fan_in}</td>
         <td>${lastSeen}</td>
-        <td>${stars}</td>
       </tr>`;
-    }).join('') || '<tr><td colspan="7">No repeater data</td></tr>';
+    }).join('') || '<tr><td colspan="6">No repeater data</td></tr>';
     document.getElementById('repeaters-caption').textContent =
-      'Status: Active <24h · Recent 24-48h · Stale >48h  ·  Score: hover row for component breakdown';
+      'Status: Active <24h · Recent 24-48h · Stale >48h';
 
-    document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => `
+    document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => {
+      const parts = e.summary.split(' ').reduce((acc, p) => {
+        const [k, v] = p.split('=');
+        if (v !== undefined) acc[k] = v;
+        return acc;
+      }, {});
+      const stageColor = e.stage === 'assigned_us' ? '#2d8a4e' : e.stage === 'assigned_other' ? '#888' : e.stage === 'fallback_sent' ? '#b07d1a' : '#4c5b4c';
+      const stageLabel = `<span style="color:${stageColor};font-weight:bold">${e.stage}</span>`;
+      let detail = '';
+      if (parts.sender) detail += `<span>from ${parts.sender}</span> `;
+      if (parts.hops)   detail += `<span>${parts.hops} hops</span> `;
+      if (parts.winner) detail += `<span>winner: <b>${parts.winner}</b></span> `;
+      if (parts.score)  detail += `<span>score: ${parts.score}</span> `;
+      if (parts.reason) detail += `<span style="color:var(--muted)">${parts.reason}</span> `;
+      if (parts.delay)  detail += `<span style="color:var(--muted)">+${parts.delay}</span>`;
+      return `
       <tr>
-        <!-- Timestamp is already local time from the database, so display as-is without timezone conversion -->
         <td>${new Date(e.timestamp * 1000).toLocaleTimeString('en-US', { hour12: true })}</td>
-           <td>${e.stage}</td>
-        <td>${e.score === null ? 'n/a' : e.score.toFixed(3)}</td>
-           <td>${e.summary}</td>
-      </tr>
-    `).join('') || '<tr><td colspan=\"4\">No recent coordination events</td></tr>';
+        <td>${stageLabel}</td>
+        <td style="font-size:13px">${detail || e.summary}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="3">No recent coordination events</td></tr>';
   } catch (err) {
     document.getElementById('meta').textContent = `Load failed: ${err}`;
   }
@@ -302,16 +296,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
 def _community_metrics_impl(viewer):
     import re
-    from community.config import ScoringConfig
-    scoring_cfg = ScoringConfig()
-    
     now = time.time()
     # Calculate local timezone offset in seconds
     # now_dt = datetime.datetime.now()
     # now_utc = datetime.datetime.utcnow()
     # tz_offset_sec = int((now_dt - now_utc).total_seconds())
     top_repeaters = []
-    stage_counts = {"bid": 0, "assigned_us": 0, "assigned_other": 0, "fallback": 0}
+    stage_counts = {"bid": 0, "assigned_us": 0, "assigned_other": 0, "fallback_sent": 0}
     recent_events = []
     event_count = 0
     total_nodes = 0
@@ -323,10 +314,8 @@ def _community_metrics_impl(viewer):
     }
 
     def _extract_score_from_summary(summary):
-      m = re.search(r"\bscore=([0-9]*\.?[0-9]+)", summary)
-      score = float(m.group(1)) if m else None
-      cleaned_summary = re.sub(r"\bscore=([0-9]*\.?[0-9]+)", "", summary).strip()
-      return score, cleaned_summary
+      cleaned_summary = re.sub(r"\bstage=\w+\b", "", summary).strip()
+      return cleaned_summary
 
     conn = sqlite3.connect(viewer.db_path, timeout=60)
     conn.row_factory = sqlite3.Row
@@ -385,38 +374,13 @@ def _community_metrics_impl(viewer):
           )
           rows = cur.fetchall()
 
-          # --- Updated infra score logic to match coordinator_scoring.py ---
-          # Gather all fan_in values for normalization (deduplication logic)
-          node_fanins = []
-          for r in rows:
-            fan_in = int(r["fan_in"] if "fan_in" in r.keys() else 0)
-            node_fanins.append(fan_in)
-          # Calculate 90th percentile normalization factor (as in coordinator_scoring.py)
-          percentile = 0.9
-          sorted_fanins = sorted(node_fanins)
-          if sorted_fanins:
-            idx = int(math.ceil(percentile * len(sorted_fanins))) - 1
-            idx = max(0, min(idx, len(sorted_fanins) - 1))
-            norm_factor = max(3, sorted_fanins[idx])
-          else:
-            norm_factor = 3
-
           for r in rows:
             fan_in = int(r["fan_in"] if "fan_in" in r.keys() else 0)
             out_hops = r["out_hops"] if "out_hops" in r.keys() else None
             age_hours = float(r["age_hours"] if "age_hours" in r.keys() else 999)
-            # Normalize fan_in using log1p and norm_factor (as in coordinator_scoring.py)
-            norm_score = min(1.0, math.log1p(fan_in) / math.log1p(norm_factor))
-            # For a single node, harmonic mean is just the value itself
-            infra = norm_score
             hop_score = 0.25 if out_hops is None else (1.0 / (1 + out_hops))
-            path_bonus = 0.0
-            freshness = math.exp(-age_hours / 24.0)
-            significance = (
-                infra * scoring_cfg.infrastructure_weight +
-                hop_score * scoring_cfg.hop_weight
-            )
-            if age_hours > 60: # 2.5 days, ignore
+            significance = (fan_in, hop_score)  # rank by links then proximity
+            if age_hours > 60:  # 2.5 days, ignore
                continue
             top_repeaters.append(
               {
@@ -426,14 +390,10 @@ def _community_metrics_impl(viewer):
                 "age_hours": round(age_hours, 1),
                 "out_hops": int(out_hops) if out_hops is not None else None,
                 "hop_score": round(hop_score, 3),
-                "infra": round(infra, 3),
-                "path_bonus": round(path_bonus, 3),
-                "freshness": round(freshness, 3),
-                "significance": round(significance, 3),
               }
             )
-          # Re-sort by significance (SQL ordered by fan_in; significance order differs)
-          top_repeaters.sort(key=lambda x: x["significance"], reverse=True)
+          # Sort by fan_in desc, hop_score desc as tiebreaker
+          top_repeaters.sort(key=lambda x: (x["fan_in"], x["hop_score"]), reverse=True)
           top_repeaters = top_repeaters[:15]  # Keep top 15 for display
 
         # Last 24 hrs of coordination snapshots injected by community layer
@@ -467,15 +427,13 @@ def _community_metrics_impl(viewer):
             event_count += 1
 
             summary = payload.get("response") or ""
-            # Remove score and any stage marker (stage=word)
-            summary_without_stage = re.sub(r"\bstage=\w+\b", "", summary).strip()
-            event_score, summary_without_score = _extract_score_from_summary(summary_without_stage)
+            # Strip stage= tag from summary display
+            summary_clean = _extract_score_from_summary(summary)
             recent_events.append(
               {
-                "timestamp": float(r["timestamp"]), # - tz_offset_sec,
+                "timestamp": float(r["timestamp"]),
                 "stage": stage,
-                "score": event_score,
-                "summary": summary_without_score,
+                "summary": summary_clean,
               }
             )
 
@@ -548,10 +506,6 @@ def _community_metrics_impl(viewer):
     finally:
         conn.close()
 
-    # Calculate average score for bid events
-    scores = [e["score"] for e in recent_events if e["score"] is not None and e["stage"] == "bid"]
-    avg_score = sum(scores) / len(scores) if scores else None
-
     return jsonify(
         {
             "timestamp": now,
@@ -563,14 +517,7 @@ def _community_metrics_impl(viewer):
             "coordination": {
                 "event_count": event_count,
                 "stage_counts": stage_counts,
-                "avg_score": avg_score,
                 "recent_events": recent_events[:50],
-            },
-            "weights": {
-                "hop_weight": scoring_cfg.hop_weight,
-                "infrastructure_weight": scoring_cfg.infrastructure_weight,
-                "bonus_weight": scoring_cfg.path_bonus_weight,
-                "freshness_weight": scoring_cfg.freshness_weight,
             },
             "dm_stats": dm_stats,
         }

@@ -158,11 +158,11 @@ class CoordinatorClient:
             resp.raise_for_status()
             data = resp.json()
 
-            self.current_score = data.get("your_score", 0.5)
+            # self.current_score = data.get("your_score", 0.5) score is now per message not bot global
             self.active_bots = data.get("active_bots", 0)
             self.heartbeat_interval = data.get("next_heartbeat_seconds", 30)
             self._last_score_update = time.time()
-            logger.info(f"Heartbeat successful: API_score={self.current_score:.3f}, active_bots={self.active_bots}, next={self.heartbeat_interval}s")
+            logger.info(f"Heartbeat successful: active_bots={self.active_bots}, next={self.heartbeat_interval}s")
             return True
         except Exception as e:
             logger.debug(f"Heartbeat failed: {e}")
@@ -180,17 +180,16 @@ class CoordinatorClient:
         receiver_rssi: Optional[int] = None,
         receiver_hops: Optional[int] = None,
         receiver_path: Optional[str] = None,
-        delivery_score: Optional[float] = None,
-    ) -> Optional[bool]:
+    ) -> Optional[dict]:
         """Ask coordinator if this bot should respond to a message.
 
-        Includes signal data (SNR, RSSI, hops, path) for the coordinator's
+        Includes raw signal data (SNR, RSSI, hops, path) for the coordinator's
         bidding window to evaluate path quality across competing bots.
-
-        Includes delivery_score for informed bidding based on potential to deliver response quality metrics.
+        Scoring is done entirely at the coordinator level.
 
         Returns:
-            True if should respond, False if should not, None if coordinator unreachable.
+            Response dict with should_respond, reason, winner_name, winner_score,
+            response_delay_ms, assigned_bot_id — or None if coordinator unreachable.
         """
         if not self.is_registered:
             logger.debug("Bot not registered, cannot ask coordinator if should respond")
@@ -200,7 +199,7 @@ class CoordinatorClient:
             "bot_id": self.bot_id,
             "message_hash": message_hash,
             "sender_pubkey": sender_pubkey,
-            "channel": channel or "",
+            "channel": channel,
             "content_prefix": content_prefix,
             "is_dm": is_dm,
             "timestamp": timestamp,
@@ -214,8 +213,6 @@ class CoordinatorClient:
             payload["receiver_hops"] = receiver_hops
         if receiver_path is not None:
             payload["receiver_path"] = receiver_path
-        if delivery_score is not None:
-            payload["delivery_score"] = delivery_score
 
         logger.debug('POSTing to coordinator /should-respond')
         try:
@@ -227,7 +224,7 @@ class CoordinatorClient:
             )
             resp.raise_for_status()
             data = resp.json()
-            return data.get("should_respond", True)
+            return data
         except Exception as e:
             logger.debug(f"Coordination check failed: {e}")
             return None  # Unreachable - caller should use fallback
