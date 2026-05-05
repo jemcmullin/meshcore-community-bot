@@ -4,7 +4,7 @@ A multi-bot-aware MeshCore mesh radio bot with coordinated response priority. Bu
 
 ## How It Works
 
-The community bot wraps the existing meshcore-bot and all its commands (weather, satellite passes, solar, etc.). When a message comes in on a channel, the bot checks with a central coordinator to see if it should respond. The bot with the highest **delivery score** gets priority. If the coordinator is unreachable, bots fall back to a delivery-score-based delay system.
+The community bot wraps the existing meshcore-bot and all its commands (weather, satellite passes, solar, etc.). When a channel message arrives, the bot forwards its raw signal data (SNR, RSSI, hops, path) to a central coordinator. The coordinator evaluates all competing bids and assigns one bot to respond. If the coordinator is unreachable, bots fall back to a hop-count-based delay so a likely closer bot responds first.
 
 ```
 Your Radio ──► Community Bot ──► Coordinator API
@@ -16,28 +16,35 @@ Your Radio ──► Community Bot ──► Coordinator API
 
 **DMs always work immediately** - coordination only applies to channel messages where multiple bots might see the same request.
 
+## How the Coordinator Decides Which Bot Responds
+
+When a message is heard by multiple bots at the same time, only one is chosen as primary to respond — otherwise the network gets flooded with duplicate responses.
+
+Here's the coordinator's decision process:
+
+1. **All bots that hear the message check in** with the coordinator within a short window (300 ms). Each bot reports what it heard: signal strength, number of hops the message took, and which repeaters it passed through.
+
+2. **The coordinator scores each bot** based on three things:
+   - **Route quality (50%)** — Did the message travel through well-established, widely-used repeaters? A node that many different mesh members route through regularly is trusted infrastructure. A personal node used by only one person scores lower.
+   - **Signal strength (25%)** — Was the final link to this bot clean? A good signal implies a higher chance of a reliable connection on the return path. Alternatively, a weak signal is a higher risk of the reply getting lost, so it scores lower. Signal score is bracketed and only penalized on the low end to avoid penalizing bots with less but still usable signal.
+   - **Hop count (25%)** — Fewer hops = fewer risks on the reply.
+
+3. **The highest-scoring bot is told to respond.** All others are told to stay silent. The winner is the bot most likely to successfully get a reply _back_ to the original sender.
+
+4. **Optionally, one or more extra bots may also respond** after a short delay (1–1.5 seconds). This is a configurable on the coordinator: this mainly for additional response diversity and is partially a backup mechanism. It also gives quieter bots occasional turns, which helps the coordinator learn more about the network over time.
+
+> **Why route quality dominates:** Signal only tells about the last hop _to_ the bot. It's a small part of whether the reply can make it _back_ to the sender. A message that arrived through an observed, heavily-used repeater is structurally more reliable for the return trip — even if the signal was less (but still usable) than other bots.
+
 ## Features
 
 Everything from [meshcore-bot](https://github.com/agessaman/meshcore-bot) as an unmodified upgradeable submodule, plus:
 
-- **Multi-Bot Coordination** - Only one bot responds per message, based on per-message delivery score
-- **Path-Based Scoring** - Delivery score reflects infrastructure, hops, path familiarity, and freshness
-- **Automatic Fallback** - Works standalone if coordinator is unreachable
-- **Network Reporting** - Messages/packets are reported for network-wide analytics
-- **New Commands** - `coverage` (show your score), `botstatus` (coordinator status), and `scoring` (top repeaters for use to this bot)
-- **Web Viewer Community Dashboard** - Real-time visualization of coordination decisions, delivery scores, and repeater significance to this bot
-
-## Delivery Scoring Overview
-
-The bot computes a delivery score for each channel message using:
-
-- Infrastructure fan-in/links/connectedness (mesh_connections)
-- Hop count (message.hops)
-- Exact path familiarity (observed_paths)
-- Path freshness (recency decay)
-  Weights and fallback behavior are configurable in [Scoring] section and env vars.
-  If coordinator is unreachable, bots use delivery-score-based delay and suppress responses below minimum score.
-  See docs/COMMUNITY_DESIGN.md for full details.
+- **Multi-Bot Coordination** - Only one bot responds per channel message; the coordinator picks the best bot based on signal data from all competing bots
+- **Automatic Fallback** - Works standalone if coordinator is unreachable; hop-based delay ensures the closest bot responds first
+- **Network Reporting** - Messages and packets are reported to the coordinator in batches for network-wide analytics
+- **Discord Integration** - Incoming and outgoing mesh messages forwarded to Discord webhooks
+- **New Commands** - `botstatus` (coordinator connection and network info) and `bot_top_repeaters` (top infrastructure relays seen by this bot, DM only)
+- **Web Viewer Community Dashboard** - Real-time visualization of coordination decisions and packet stream
 
 ## Requirements
 
@@ -161,11 +168,10 @@ If `COORDINATOR_URL` is empty or the coordinator is unreachable, the bot runs st
 
 All commands from meshcore-bot are available, plus:
 
-| Command     | Description                                                       |
-| ----------- | ----------------------------------------------------------------- |
-| `coverage`  | Shows your bot's current coverage score (current coordinator api) |
-| `botstatus` | Shows coordinator connection status and network info              |
-| `scoring`   | Shows top repeaters contributing to your delivery score           |
+| Command             | Description                                                             |
+| ------------------- | ----------------------------------------------------------------------- |
+| `botstatus`         | Coordinator connection status, active bot count, uptime, fallback delay |
+| `bot_top_repeaters` | Top infrastructure relays seen by this bot, ranked by fan-in (DM only)  |
 
 ## Updating
 

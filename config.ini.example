@@ -92,9 +92,9 @@ local.den = Denver metro
 local.fnl = Fort Collins-Loveland
 local.cos = Colorado Springs
 emergency.emergency = Emergency communications and alerts
-emergency.weather = Weather updates and conditions
-emergency.traffic = Traffic updates and road conditions
-emergency.hamradio = Amateur radio emergency net
+other.weather = Weather updates and conditions
+other.hamradio = Amateur radio emergency net
+other.cm-reach = Colorado Mesh range check tool
 
 [Banned_Users]
 banned_users =
