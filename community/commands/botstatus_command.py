@@ -24,7 +24,6 @@ class BotstatusCommand(BaseCommand):
                 return True
 
             status = "Connected" if coordinator.is_registered else "Not registered"
-            score = coordinator.current_score
             active = coordinator.active_bots
             uptime = int(time.time() - self.bot.start_time)
             hours = uptime // 3600
@@ -32,9 +31,9 @@ class BotstatusCommand(BaseCommand):
 
             parts = [
                 f"Status: {status}",
-                f"Score: {score:.0%}",
                 f"Network: {active} bots",
                 f"Uptime: {hours}h {mins}m",
+
             ]
 
             if timing:

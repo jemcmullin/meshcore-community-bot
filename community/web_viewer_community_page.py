@@ -85,7 +85,7 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
         </table>
       </section>
       <section class=\"card\" style=\"grid-column: 1/-1;\">
-        <h3>Top Repeaters</h3>
+        <h3>Top Repeaters (from this bot)</h3>
         <table>
           <thead><tr>
             <th>Top</th>

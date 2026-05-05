@@ -2,12 +2,12 @@ import asyncio
 from modules.commands.base_command import BaseCommand
 from modules.models import MeshMessage
 
-class ScoringCommand(BaseCommand):
-    """Bid-score diagnostics for bot owners (community extension)."""
+class TopRepeatersCommand(BaseCommand):
+    """Best repeaters nearby for bot (community extension)."""
 
-    name = "scoring"
-    keywords = ["score", "scoring", "repeaters"]
-    description = "Shows top infra relays and simple bid-health metrics"
+    name = "NearbyTopRepeaters"
+    keywords = ["nearby_top_repeaters", "bot_top_repeaters", "bot_top_reps"]
+    description = "Shows top infra relays nearby the bot"
     requires_dm = True
     category = "community"
 
@@ -104,6 +104,6 @@ class ScoringCommand(BaseCommand):
             await self.send_response(message, text)
             return True
         except Exception as e:
-            self.logger.error(f"Scoring command error: {e}")
-            await self.send_response(message, "Error getting scoring diagnostics")
+            self.logger.error(f"TopRepeaters command error: {e}")
+            await self.send_response(message, "Error getting top repeaters")
             return False
