@@ -44,7 +44,7 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
     .wrap { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
     h1 { margin: 0 0 12px; }
     .meta { color: var(--muted); margin-bottom: 16px; }
-    .grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap: 12px; }
+    .grid { display:grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
     .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; }
     table { width:100%; border-collapse: collapse; }
     th, td { text-align:left; padding:6px; border-bottom:1px solid var(--line); font-size:14px; }
