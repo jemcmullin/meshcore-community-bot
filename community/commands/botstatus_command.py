@@ -17,7 +17,6 @@ class BotstatusCommand(BaseCommand):
     async def execute(self, message: MeshMessage) -> bool:
         try:
             coordinator = getattr(self.bot, "coordinator", None)
-            timing = getattr(self.bot, "response_timing", None)
 
             if not coordinator or not coordinator.is_configured:
                 await self.send_response(message, "Running standalone (no coordinator)")
@@ -33,12 +32,7 @@ class BotstatusCommand(BaseCommand):
                 f"Status: {status}",
                 f"Network: {active} bots",
                 f"Uptime: {hours}h {mins}m",
-
             ]
-
-            if timing:
-                delay = timing.compute_fallback_delay_ms()
-                parts.append(f"Fallback delay: {delay}ms")
 
             await self.send_response(message, "\n".join(parts))
             return True

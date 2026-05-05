@@ -341,7 +341,7 @@ def _community_metrics_impl(viewer):
           # Calculate local timezone offset in hours
           # May inflate score when mixed prefix length connections exist and public key is missing. Actual scoring implements deduplication.
           cur.execute(
-            f"""
+            """
             SELECT COALESCE(mc.to_public_key, mc.to_prefix) AS node,
                  COUNT(DISTINCT mc.from_public_key) AS fan_in,
                  CAST((julianday('now', 'localtime') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
@@ -517,7 +517,7 @@ def _community_metrics_impl(viewer):
     return jsonify(
         {
             "timestamp": now,
-            "db_path": viewer.db_path,
+            "db_path": Path(viewer.db_path).name,
             "network": {
                 "total_nodes": total_nodes,
             },

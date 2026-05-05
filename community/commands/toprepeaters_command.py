@@ -62,7 +62,6 @@ class TopRepeatersCommand(BaseCommand):
 
             top_nodes = []
             stale_nodes = 0
-            import math
 
             for row in infra_rows:
                 node_val = row.get("node") or ""

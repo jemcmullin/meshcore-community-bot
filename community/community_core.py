@@ -61,8 +61,8 @@ class CommunityBot(MeshCoreBot):
 
         # Load coordinator config
         self.coordinator_config = CoordinatorConfig.from_env_and_config(self.config)
-        self.logger.info('Coordinator config loaded')
-        self.logger.debug(
+        logger.info('Coordinator config loaded')
+        logger.debug(
             f"Coordinator config: url={self.coordinator_config.url}, "
             f"heartbeat_interval={self.coordinator_config.heartbeat_interval}s, "
             f"coordination_timeout={self.coordinator_config.coordination_timeout_ms}ms, "
@@ -108,7 +108,7 @@ class CommunityBot(MeshCoreBot):
         self._coordinator_tasks: list[asyncio.Task] = []
         self._registered_with_real_key = False
 
-        self.logger.info("Community bot initialized with coordinator support")
+        logger.info("Community bot initialized with coordinator support")
     
     def _setup_community_logging(self):
         """Mirror all MeshCoreBot handlers onto the CommunityBot logger.
@@ -187,14 +187,14 @@ class CommunityBot(MeshCoreBot):
                                 self.plugin_loader.plugin_metadata[cmd_name] = metadata
                                 for kw in metadata.get('keywords', []):
                                     self.plugin_loader.keyword_mappings[kw.lower()] = cmd_name
-                            self.logger.info(f"Loaded community command: {cmd_name}")
+                            logger.info(f"Loaded community command: {cmd_name}")
                         break
             except Exception as e:
-                self.logger.warning(f"Failed to load community command {py_file.name}: {e}")
+                logger.warning(f"Failed to load community command {py_file.name}: {e}")
 
     async def start(self):
         """Start the bot with coordinator integration."""
-        self.logger.info("Starting Community Bot...")
+        logger.info("Starting Community Bot...")
 
         # Start coordinator background tasks (heartbeat will handle registration)
         self._start_coordinator_tasks()
@@ -270,7 +270,7 @@ class CommunityBot(MeshCoreBot):
 
         if success:
             self._registered_with_real_key = True
-            self.logger.info(
+            logger.info(
                 f"Registered with coordinator as {bot_name} "
                 f"(bot_id={self.coordinator.bot_id}, pubkey={public_key[:12]}...)"
             )
@@ -289,7 +289,7 @@ class CommunityBot(MeshCoreBot):
         task = asyncio.create_task(self.packet_reporter.run())
         self._coordinator_tasks.append(task)
 
-        self.logger.info("Coordinator background tasks started")
+        logger.info("Coordinator background tasks started")
 
     async def _heartbeat_loop(self):
         """Send periodic heartbeats to the coordinator.
@@ -304,7 +304,7 @@ class CommunityBot(MeshCoreBot):
                     if self.connected and self.meshcore:
                         success = await self._register_with_coordinator()
                         if not success:
-                            self.logger.debug("Waiting for radio to provide public key...")
+                            logger.debug("Waiting for radio to provide public key...")
                     # Don't send heartbeats until registered
                     await asyncio.sleep(5)
                     continue
@@ -326,6 +326,6 @@ class CommunityBot(MeshCoreBot):
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self.logger.debug(f"Heartbeat error: {e}")
+                logger.debug(f"Heartbeat error: {e}")
 
             await asyncio.sleep(self.coordinator.heartbeat_interval)
