@@ -125,17 +125,19 @@ async function refresh() {
     const coord = data.coordination;
     const sc = coord.stage_counts;
     const total = sc.bid || 0;
-    const won = sc.assigned_us || 0;
-    const lost = sc.assigned_other || 0;
+    const responded = sc.assigned_us || 0;
+    const deferred = sc.assigned_other || 0;
     const fallback = sc.fallback_sent || 0;
-    const winRate = total > 0 ? ((won / total) * 100).toFixed(0) : 0;
+    const respondedRandom = sc.assigned_us_random || 0;
+    const respondedBest = responded - respondedRandom;
+    const responseRate = total > 0 ? ((responded / total) * 100).toFixed(0) : 0;
     const fallbackRate = total > 0 ? ((fallback / total) * 100).toFixed(0) : 0;
     if (total === 0) {
       document.getElementById('coord').innerHTML = '<div style=\"color:var(--muted)\">No coordination events in last hour</div>';
     } else {
       document.getElementById('coord').innerHTML = `
-        <div><b>Bids:</b> ${total} (won ${won}, lost ${lost})</div>
-        <div><b>Win rate:</b> ${winRate}%</div>
+        <div><b>Coordinated:</b> ${total} (responded ${responded}, deferred ${deferred})</div>
+        <div><b>Response rate:</b> ${responseRate}% <span style="color:var(--muted);font-size:12px">(best: <span style="color:#2d8a4e">${respondedBest}</span> · random: <span style="color:#5a9a6e">${respondedRandom}</span>)</span></div>
         <div><b>Fallback:</b> ${fallback} (${fallbackRate}%)</div>
       `;
     }
@@ -154,20 +156,21 @@ async function refresh() {
         <div><b>Delivery confirmed:</b> ${dmsDelivered} (${deliveryRate}%)</div>
       `;
       
-      // Show top 3 users with best delivery rate
-      if (dm.top_users && dm.top_users.length > 0) {
+      // Show top users (rate >= 80%)
+      const topUsers = (dm.top_users || []).filter(u => u.rate >= 80);
+      if (topUsers.length > 0) {
         dmHtml += '<div style=\"margin-top:8px;font-size:12px;color:var(--muted)\"><b>Top delivery:</b></div>';
-        dm.top_users.forEach(u => {
-          const statusColor = u.rate >= 80 ? '#2d8a4e' : u.rate >= 50 ? '#b07d1a' : '#888';
-          dmHtml += `<div style=\"font-size:11px\"><span style=\"color:${statusColor};font-weight:bold\">${u.rate}%</span> ${u.user} (${u.delivered}/${u.sent})</div>`;
+        topUsers.forEach(u => {
+          dmHtml += `<div style=\"font-size:11px\"><span style=\"color:#2d8a4e;font-weight:bold\">${u.rate}%</span> ${u.user} (${u.delivered}/${u.sent})</div>`;
         });
       }
       
-      // Show bottom 3 users with worst delivery rate
-      if (dm.bottom_users && dm.bottom_users.length > 0) {
+      // Show bottom users (rate < 80%)
+      const bottomUsers = (dm.bottom_users || []).filter(u => u.rate < 80);
+      if (bottomUsers.length > 0) {
         dmHtml += '<div style=\"margin-top:6px;font-size:12px;color:var(--muted)\"><b>Needs attention:</b></div>';
-        dm.bottom_users.forEach(u => {
-          const statusColor = u.rate >= 80 ? '#2d8a4e' : u.rate >= 50 ? '#b07d1a' : '#c44';
+        bottomUsers.forEach(u => {
+          const statusColor = u.rate >= 50 ? '#b07d1a' : '#c44';
           dmHtml += `<div style=\"font-size:11px\"><span style=\"color:${statusColor};font-weight:bold\">${u.rate}%</span> ${u.user} (${u.delivered}/${u.sent})</div>`;
         });
       }
@@ -202,17 +205,18 @@ async function refresh() {
       'Status: Active <24h · Recent 24-48h · Stale >48h';
 
     document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => {
-      const parts = e.summary.split(' ').reduce((acc, p) => {
-        const [k, v] = p.split('=');
-        if (v !== undefined) acc[k] = v;
-        return acc;
-      }, {});
-      const stageColor = e.stage === 'assigned_us' ? '#2d8a4e' : e.stage === 'assigned_other' ? '#888' : e.stage === 'fallback_sent' ? '#b07d1a' : '#4c5b4c';
-      const stageLabel = `<span style="color:${stageColor};font-weight:bold">${e.stage}</span>`;
+      const parts = {};
+      const _re = /(\\w+)=((?:(?!\\s\\w+=).)+)/g;
+      let _m;
+      while ((_m = _re.exec(e.summary)) !== null) { parts[_m[1]] = _m[2].trim(); }
+      const isRandom = e.stage === 'assigned_us' && (parts.reason || '').includes('random');
+      const stageColor = e.stage === 'assigned_us' ? (isRandom ? '#5a9a6e' : '#2d8a4e') : e.stage === 'assigned_other' ? '#888' : e.stage === 'fallback_sent' ? '#b07d1a' : '#4c5b4c';
+      const stageText = e.stage === 'assigned_us' ? (isRandom ? 'responded (random)' : 'responded (best)') : e.stage === 'assigned_other' ? 'deferred' : e.stage;
+      const stageLabel = `<span style="color:${stageColor};font-weight:bold">${stageText}</span>`;
       let detail = '';
       if (parts.sender) detail += `<span>from ${parts.sender}</span> `;
       if (parts.hops)   detail += `<span>${parts.hops} hops</span> `;
-      if (parts.winner) detail += `<span>winner: <b>${parts.winner}</b></span> `;
+      if (parts.winner) detail += `<span>handler: <b>${parts.winner}</b></span> `;
       if (parts.score)  detail += `<span>score: ${parts.score}</span> `;
       if (parts.reason) detail += `<span style="color:var(--muted)">${parts.reason}</span> `;
       if (parts.delay)  detail += `<span style="color:var(--muted)">+${parts.delay}</span>`;
@@ -425,6 +429,10 @@ def _community_metrics_impl(viewer):
               stage_counts[stage] = 0
             stage_counts[stage] += 1
             event_count += 1
+            if stage == "assigned_us":
+              summary_raw = payload.get("response") or ""
+              if "random" in summary_raw:
+                stage_counts["assigned_us_random"] = stage_counts.get("assigned_us_random", 0) + 1
 
             summary = payload.get("response") or ""
             # Strip stage= tag from summary display
