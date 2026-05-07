@@ -305,10 +305,6 @@ document.addEventListener('DOMContentLoaded', function () {
 def _community_metrics_impl(viewer):
     import re
     now = time.time()
-    # Calculate local timezone offset in seconds
-    # now_dt = datetime.datetime.now()
-    # now_utc = datetime.datetime.utcnow()
-    # tz_offset_sec = int((now_dt - now_utc).total_seconds())
     top_repeaters = []
     stage_counts = {"bid": 0, "assigned_us": 0, "assigned_other": 0, "fallback_sent": 0}
     recent_events = []
@@ -355,10 +351,6 @@ def _community_metrics_impl(viewer):
             SELECT COALESCE(mc.to_public_key, mc.to_prefix) AS node,
                  COUNT(DISTINCT mc.from_public_key) AS fan_in,
                  CAST((julianday('now', 'localtime') - julianday(MAX(mc.last_seen))) * 24 AS REAL) AS age_hours,
-                 (SELECT MAX(c)
-                FROM (SELECT COUNT(DISTINCT from_public_key) AS c
-                    FROM mesh_connections
-                    GROUP BY to_public_key)) AS max_fan_in,
                  cct.out_hops,
                  cct2.name
             FROM mesh_connections mc
@@ -393,7 +385,6 @@ def _community_metrics_impl(viewer):
             out_hops = r["out_hops"] if "out_hops" in r.keys() else None
             age_hours = float(r["age_hours"] if "age_hours" in r.keys() else 999)
             hop_score = 0.25 if out_hops is None else (1.0 / (1 + out_hops))
-            significance = (fan_in, hop_score)  # rank by links then proximity
             if age_hours > 60:  # 2.5 days, ignore
                continue
             top_repeaters.append(
