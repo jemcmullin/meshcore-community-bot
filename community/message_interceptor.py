@@ -24,7 +24,14 @@ current_message_var = contextvars.ContextVar('current_message')
 coordinated_var = contextvars.ContextVar('coordinated', default=False)
 
 class MessageInterceptor:
-    """Intercepts send_response to coordinate with the central coordinator."""
+    """Intercepts send_response to coordinate with the central coordinator.
+    
+    Note on patched method signatures: All patched methods use *args, **kwargs for
+    optional/forwarded parameters to remain compatible with upstream submodule changes.
+    We explicitly declare only the parameters we use (e.g., channel, content, message),
+    and forward everything else via *args/**kwargs to preserve compatibility across
+    submodule versions.
+    """
 
     def __init__(self, bot, coordinator: CoordinatorClient, timing: ResponseTiming, reporter=None):
         self.bot = bot
@@ -61,7 +68,7 @@ class MessageInterceptor:
             coordinated_var.reset(coord_token)
             current_message_var.reset(token)
     
-    async def _coordinated_send_channel_message(self, channel, content, command_id=None, skip_user_rate_limit=False, rate_limit_key=None, scope=None):
+    async def _coordinated_send_channel_message(self, channel, content, *args, **kwargs):
         previously_coordinated = coordinated_var.get()
         message = None
         message_hash = ""
@@ -74,21 +81,21 @@ class MessageInterceptor:
             except LookupError:
                 logger.warning('[COORDINATOR] send_channel_message no context, sending without coordination')
 
-        result = await self._original_send_channel_message(channel, content, command_id, skip_user_rate_limit, rate_limit_key, scope)
+        result = await self._original_send_channel_message(channel, content, *args, **kwargs)
 
         if not previously_coordinated: # Keyword Message not yet reported
             await self._report_message(message=message, bot_responded=result, message_hash=message_hash)
 
         return result
     
-    async def _coordinated_send_response(self, message, content: str, **kwargs) -> bool:
+    async def _coordinated_send_response(self, message, content: str, *args, **kwargs) -> bool:
         """Intercept send_response calls, check with coordinator, and report message."""
 
         should_send, message_hash = await self._coordinate_should_respond(message)
         coordinated_var.set(True)
 
         if should_send:
-            result = await self._original_send_response(message, content, **kwargs)
+            result = await self._original_send_response(message, content, *args, **kwargs)
             # Forward bot response to Discord webhook
             await self._discord_forward_response(message, content)
         else:
