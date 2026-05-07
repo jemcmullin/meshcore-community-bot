@@ -205,21 +205,20 @@ async function refresh() {
       'Status: Active <24h · Recent 24-48h · Stale >48h';
 
     document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => {
-      const parts = {};
-      const _re = /(\\w+)=((?:(?!\\s\\w+=).)+)/g;
-      let _m;
-      while ((_m = _re.exec(e.summary)) !== null) { parts[_m[1]] = _m[2].trim(); }
-      const isRandom = e.stage === 'assigned_us' && (parts.reason || '').includes('random');
-      const stageColor = e.stage === 'assigned_us' ? (isRandom ? '#5a9a6e' : '#2d8a4e') : e.stage === 'assigned_other' ? '#888' : e.stage === 'fallback_sent' ? '#b07d1a' : '#4c5b4c';
-      const stageText = e.stage === 'assigned_us' ? (isRandom ? 'responded (random)' : 'responded (best)') : e.stage === 'assigned_other' ? 'deferred' : e.stage;
+      const stageColor = e.stage === 'assigned_us' ? (e.is_random ? '#5a9a6e' : '#2d8a4e')
+        : e.stage === 'assigned_other' ? '#888'
+        : e.stage === 'fallback_sent' ? '#b07d1a' : '#4c5b4c';
+      const stageText = e.stage === 'assigned_us' ? (e.is_random ? 'responded (random)' : 'responded (best)')
+        : e.stage === 'assigned_other' ? 'deferred'
+        : e.stage === 'fallback_sent' ? 'fallback' : e.stage;
       const stageLabel = `<span style="color:${stageColor};font-weight:bold">${stageText}</span>`;
       let detail = '';
-      if (parts.sender) detail += `<span>from ${parts.sender}</span> `;
-      if (parts.hops)   detail += `<span>${parts.hops} hops</span> `;
-      if (parts.winner) detail += `<span>handler: <b>${parts.winner}</b></span> `;
-      if (parts.score)  detail += `<span>score: ${parts.score}</span> `;
-      if (parts.reason) detail += `<span style="color:var(--muted)">${parts.reason}</span> `;
-      if (parts.delay)  detail += `<span style="color:var(--muted)">+${parts.delay}</span>`;
+      if (e.sender) detail += `<span>from ${e.sender}</span> `;
+      if (e.hops)   detail += `<span>${e.hops} hops</span> `;
+      if (e.winner) detail += `<span>handler: <b>${e.winner}</b></span> `;
+      if (e.score)  detail += `<span>score: ${e.score}</span> `;
+      if (e.reason) detail += `<span style="color:var(--muted)">${e.reason}</span> `;
+      if (e.delay)  detail += `<span style="color:var(--muted)">+${e.delay}</span>`;
       return `
       <tr>
         <td>${new Date(e.timestamp * 1000).toLocaleTimeString('en-US', { hour12: true })}</td>
@@ -320,6 +319,12 @@ def _community_metrics_impl(viewer):
     def _extract_score_from_summary(summary):
       cleaned_summary = re.sub(r"\bstage=\w+\b", "", summary).strip()
       return cleaned_summary
+
+    def _parse_summary_parts(summary):
+      parts = {}
+      for m in re.finditer(r'(\w+)=((?:(?!\s\w+=).)+)', summary):
+        parts[m.group(1)] = m.group(2).strip()
+      return parts
 
     conn = sqlite3.connect(viewer.db_path, timeout=60)
     conn.row_factory = sqlite3.Row
@@ -437,13 +442,45 @@ def _community_metrics_impl(viewer):
             summary = payload.get("response") or ""
             # Strip stage= tag from summary display
             summary_clean = _extract_score_from_summary(summary)
+            parts = _parse_summary_parts(summary_clean)
+            is_random = stage == "assigned_us" and "random" in (parts.get("reason") or "")
             recent_events.append(
               {
                 "timestamp": float(r["timestamp"]),
                 "stage": stage,
+                "is_random": is_random,
+                "sender": parts.get("sender"),
+                "hops": parts.get("hops"),
+                "winner": parts.get("winner"),
+                "score": parts.get("score"),
+                "reason": parts.get("reason"),
+                "delay": parts.get("delay"),
                 "summary": summary_clean,
               }
             )
+
+        # Pair bid+result events into single rows (descending: result appears before its bid)
+        combined_events = []
+        paired_bids = set()
+        for i, evt in enumerate(recent_events):
+            if i in paired_bids:
+                continue
+            if evt["stage"] == "bid":
+                combined_events.append(evt)
+            else:
+                for j in range(i + 1, len(recent_events)):
+                    if j in paired_bids:
+                        continue
+                    b = recent_events[j]
+                    if b["stage"] != "bid":
+                        continue
+                    if (b.get("sender") == evt.get("sender")
+                            and abs(evt["timestamp"] - b["timestamp"]) < 5):
+                        combined_events.append({**b, **evt})  # result fields win
+                        paired_bids.add(j)
+                        break
+                else:
+                    combined_events.append(evt)
 
         # DM statistics (last 24 hrs) - track sent DMs and ACK delivery confirmation
         if "packet_stream" in tables:
@@ -525,7 +562,7 @@ def _community_metrics_impl(viewer):
             "coordination": {
                 "event_count": event_count,
                 "stage_counts": stage_counts,
-                "recent_events": recent_events[:50],
+                "recent_events": combined_events[:25],
             },
             "dm_stats": dm_stats,
         }
