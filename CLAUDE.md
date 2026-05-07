@@ -17,13 +17,13 @@ MeshCore Community Bot extends the MeshCore mesh radio bot with multi-bot coordi
 `meshcore-bot/` is a git submodule tracking upstream. The strong preference is **never modify files inside `meshcore-bot/`**. Instead:
 
 1. **Patch via community layer** — monkey-patch methods at runtime from `community/` code (e.g. `MessageInterceptor` patches `send_response` using `types.MethodType`).
-2. **DB tables** — Community code reads **only existing submodule tables** (`complete_contact_tracking`, `mesh_connections`). The `scoring_command` reads `mesh_connections` for fan-in data. No community tables are created.
+2. **DB tables** — Community code reads **only existing submodule tables** (`complete_contact_tracking`, `mesh_connections`). The `botreps_command` reads `mesh_connections` for fan-in data. No community tables are created.
 
 ## Key Integration Point
 
-`MessageInterceptor` patches two methods on meshcore-bot:
+`MessageInterceptor` patches two methods on meshcore-bot to intercept and coordinate all channel message responses:
 
-**`CommandManager.send_response()`** at `meshcore-bot/modules/command_manager.py:552` is patched by `MessageInterceptor`. This method captures all COMMAND bot responses.
+**`CommandManager.send_response()`** at `meshcore-bot/modules/command_manager.py:552` is patched by `MessageInterceptor`. This method captures all COMMAND bot responses sent to channels.
 
 **`ChannelManager.send_channel_message()`** at `meshcore-bot/modules/channel_manager.py:85` is patched by `MessageInterceptor`. This captures all channel responses, including those triggered by KEYWORDS that bypass `send_response()`.
 
@@ -50,13 +50,13 @@ community_bot.py                    # Entry point
 ├── packet_reporter.py             # Background batch reporter
 ├── response_timing.py             # Coordinator delay and hop-based fallback timing
 ├── config.py                      # CoordinatorConfig from env/ini
+├── discord_webhook.py             # Discord webhook integration for bot alerts
 ├── web_viewer_community_page.py   # Community dashboard web UI (Flask+SocketIO)
 ├── web_viewer_packet_stream.py    # Publishes events for web viewer
 ├── web_viewer_patch.py            # Integrates with meshcore-bot web viewer
 └── commands/
-  ├── coverage_command.py        # "coverage" - show coordinator score and active bots
-  ├── botstatus_command.py       # "botstatus" - coordinator status
-  └── scoring_command.py         # "scoring" - top repeaters to this bot by fan-in/hops
+  ├── botstatus_command.py       # "botstatus" - coordinator connection status
+  └── botreps_command.py         # "botreps" - top infra relays nearby the bot by fan-in/hops
 meshcore-bot/                      # Git submodule — DO NOT MODIFY DIRECTLY
 ├── modules/
 │   ├── core.py                   # MeshCoreBot - main bot class

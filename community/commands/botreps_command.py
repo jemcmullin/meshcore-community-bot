@@ -2,11 +2,11 @@ import asyncio
 from modules.commands.base_command import BaseCommand
 from modules.models import MeshMessage
 
-class TopRepeatersCommand(BaseCommand):
+class BotRepsCommand(BaseCommand):
     """Best repeaters nearby for bot (community extension)."""
 
     name = "NearbyTopRepeaters"
-    keywords = ["nearby_top_repeaters", "bot_top_repeaters", "bot_top_reps"]
+    keywords = ["botreps", "nearbytopreps", "bottopreps", "topreps"]
     description = "Shows top infra relays nearby the bot"
     requires_dm = True
     category = "community"
