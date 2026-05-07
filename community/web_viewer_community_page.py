@@ -80,7 +80,7 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
       <section class=\"card\" style=\"grid-column: 1/-1;\">
         <h3>Recent Coordination Events</h3>
         <table>
-          <thead><tr><th>Time</th><th>Stage</th><th>Details</th></tr></thead>
+          <thead><tr><th>Bid</th><th>Coordinated</th><th>Sender</th><th>Hops</th><th>Command</th><th>Action</th><th>Reason</th><th>Details</th></tr></thead>
           <tbody id=\"events\"></tbody>
         </table>
       </section>
@@ -204,6 +204,7 @@ async function refresh() {
     document.getElementById('repeaters-caption').textContent =
       'Status: Active <24h · Recent 24-48h · Stale >48h';
 
+    const fmtTime = ts => ts ? new Date(ts * 1000).toLocaleTimeString('en-US', { hour12: true }) : '—';
     document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => {
       const stageColor = e.stage === 'assigned_us' ? (e.is_random ? '#5a9a6e' : '#2d8a4e')
         : e.stage === 'assigned_other' ? '#888'
@@ -212,20 +213,24 @@ async function refresh() {
         : e.stage === 'assigned_other' ? 'deferred'
         : e.stage === 'fallback_sent' ? 'fallback' : e.stage;
       const stageLabel = `<span style="color:${stageColor};font-weight:bold">${stageText}</span>`;
+      const bidTime = fmtTime(e.bid_timestamp || (e.stage === 'bid' ? e.timestamp : null));
+      const coordTime = e.stage !== 'bid' ? fmtTime(e.timestamp) : '—';
       let detail = '';
-      if (e.sender) detail += `<span>from ${e.sender}</span> `;
-      if (e.hops)   detail += `<span>${e.hops} hops</span> `;
       if (e.winner) detail += `<span>handler: <b>${e.winner}</b></span> `;
       if (e.score)  detail += `<span>score: ${e.score}</span> `;
-      if (e.reason) detail += `<span style="color:var(--muted)">${e.reason}</span> `;
       if (e.delay)  detail += `<span style="color:var(--muted)">+${e.delay}</span>`;
       return `
       <tr>
-        <td>${new Date(e.timestamp * 1000).toLocaleTimeString('en-US', { hour12: true })}</td>
+        <td>${bidTime}</td>
+        <td>${coordTime}</td>
+        <td class="mono">${e.sender || '—'}</td>
+        <td>${e.hops != null ? e.hops : '—'}</td>
+        <td class="mono">${e.command || '—'}</td>
         <td>${stageLabel}</td>
-        <td style="font-size:13px">${detail || e.summary}</td>
+        <td style="color:var(--muted);font-size:13px">${e.reason || '—'}</td>
+        <td style="font-size:13px">${detail || '—'}</td>
       </tr>`;
-    }).join('') || '<tr><td colspan="3">No recent coordination events</td></tr>';
+    }).join('') || '<tr><td colspan="8">No recent coordination events</td></tr>';
   } catch (err) {
     document.getElementById('meta').textContent = `Load failed: ${err}`;
   }
@@ -451,6 +456,7 @@ def _community_metrics_impl(viewer):
                 "is_random": is_random,
                 "sender": parts.get("sender"),
                 "hops": parts.get("hops"),
+                "command": parts.get("command"),
                 "winner": parts.get("winner"),
                 "score": parts.get("score"),
                 "reason": parts.get("reason"),
@@ -476,7 +482,7 @@ def _community_metrics_impl(viewer):
                         continue
                     if (b.get("sender") == evt.get("sender")
                             and abs(evt["timestamp"] - b["timestamp"]) < 5):
-                        combined_events.append({**b, **evt})  # result fields win
+                        combined_events.append({**b, **evt, "bid_timestamp": b["timestamp"]})  # result fields win; preserve bid time
                         paired_bids.add(j)
                         break
                 else:

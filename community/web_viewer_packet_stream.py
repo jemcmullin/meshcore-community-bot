@@ -59,6 +59,7 @@ async def publish_web_viewer_coordination_event(
     winner_score: float = 0.0,
     reason: str = "",
     delay_ms: int = 0,
+    command: str = "",
 ):
     """
     Publish coordination stage snapshots to web viewer command stream.
@@ -76,6 +77,8 @@ async def publish_web_viewer_coordination_event(
     hops = getattr(message, 'hops', None)
     if hops is not None:
         summary_parts.append(f"hops={hops}")
+    if command:
+        summary_parts.append(f"command={command}")
     if winner_name:
         summary_parts.append(f"winner={winner_name}")
     if winner_score:

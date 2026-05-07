@@ -140,6 +140,7 @@ class MessageInterceptor:
             message=message,
             message_hash=message_hash,
             stage="bid",
+            command=content_prefix,
         ))
 
         # Ask coordinator with raw signal data; coordinator does the scoring
@@ -175,6 +176,7 @@ class MessageInterceptor:
                 winner_score=winner_score,
                 reason=reason,
                 delay_ms=delay_ms,
+                command=content_prefix,
             ))
             await self.timing.wait_delay_ms(delay_ms)
             return True, message_hash
@@ -194,6 +196,7 @@ class MessageInterceptor:
                 winner_name=winner_name,
                 winner_score=winner_score,
                 reason=reason,
+                command=content_prefix,
             ))
             return False, message_hash
 
@@ -206,6 +209,7 @@ class MessageInterceptor:
             message=message,
             message_hash=message_hash,
             stage="fallback_sent",
+            command=content_prefix,
         ))
         return True, message_hash  # Send after fallback delay
 
