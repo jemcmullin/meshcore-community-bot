@@ -440,10 +440,12 @@ def _community_metrics_impl(viewer):
             summary_clean = _extract_score_from_summary(summary)
             parts = _parse_summary_parts(summary_clean)
             is_random = stage == "assigned_us" and "random" in (parts.get("reason") or "")
+            command_id = str(payload.get("command_id") or "")
             recent_events.append(
               {
                 "timestamp": float(r["timestamp"]),
                 "stage": stage,
+                "command_id": command_id,
                 "is_random": is_random,
                 "sender": parts.get("sender"),
                 "hops": parts.get("hops"),
@@ -456,28 +458,34 @@ def _community_metrics_impl(viewer):
               }
             )
 
-        # Pair bid+result events into single rows (descending: result appears before its bid)
+        # Pair bid+result events into single rows using message hash.
+        # Events are ordered DESC by timestamp, so the result usually appears before its bid.
         combined_events = []
         paired_bids = set()
         for i, evt in enumerate(recent_events):
-            if i in paired_bids:
-                continue
-            if evt["stage"] == "bid":
-                combined_events.append(evt)
-            else:
-                for j in range(i + 1, len(recent_events)):
-                    if j in paired_bids:
-                        continue
-                    b = recent_events[j]
-                    if b["stage"] != "bid":
-                        continue
-                    if (b.get("sender") == evt.get("sender")
-                            and abs(evt["timestamp"] - b["timestamp"]) < 5):
-                        combined_events.append({**b, **evt, "bid_timestamp": b["timestamp"]})  # result fields win; preserve bid time
-                        paired_bids.add(j)
-                        break
-                else:
-                    combined_events.append(evt)
+          if i in paired_bids:
+            continue
+          if evt["stage"] == "bid":
+            combined_events.append(evt)
+            continue
+
+          evt_command_id = evt.get("command_id")
+          if not evt_command_id:
+            combined_events.append(evt)
+            continue
+
+          for j in range(i + 1, len(recent_events)):
+            if j in paired_bids:
+              continue
+            bid_evt = recent_events[j]
+            if bid_evt["stage"] != "bid":
+              continue
+            if bid_evt.get("command_id") == evt_command_id:
+              combined_events.append({**bid_evt, **evt, "bid_timestamp": bid_evt["timestamp"]})  # result fields win; preserve bid time
+              paired_bids.add(j)
+              break
+          else:
+            combined_events.append(evt)
 
         # DM statistics (last 24 hrs) - track sent DMs and ACK delivery confirmation
         if "packet_stream" in tables:

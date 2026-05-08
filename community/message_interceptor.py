@@ -132,6 +132,14 @@ class MessageInterceptor:
         # If coordinator is not configured, send immediately
         if not self.coordinator.is_configured:
             logger.warning("[COORDINATOR] Coordinator not configured, sending without coordination")
+            asyncio.create_task(publish_web_viewer_coordination_event(
+                bot=self.bot,
+                message=message,
+                message_hash=message_hash,
+                stage="fallback_sent",
+                reason="coordinator_not_configured",
+                command=(message.content or "").split()[0] if message.content else "",
+            ))
             return True, message_hash
 
         logger.debug("[COORDINATOR] Message is a channel message, checking with coordinator before responding")
