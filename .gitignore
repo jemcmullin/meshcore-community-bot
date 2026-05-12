@@ -34,6 +34,7 @@ logs/
 *.swp
 *.swo
 *~
+.github/
 
 # Docker
 docker-compose.override.yml

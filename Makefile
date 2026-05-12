@@ -1,4 +1,4 @@
-.PHONY: build up down logs pull submodule start redeploy
+.PHONY: build up down logs pull submodule submodule-dev build-dev start restart restart-dev redeploy redeploy-dev
 
 # Ensure submodule is initialized before any docker operation
 submodule:
@@ -21,4 +21,16 @@ start: up logs
 pull:
 	git pull
 
-redeploy: pull build down start
+restart: build down start
+
+redeploy: pull restart
+
+submodule-dev:
+	cd meshcore-bot && git fetch && git checkout dev && git pull --ff-only origin dev
+
+build-dev: submodule-dev
+	docker compose build
+
+restart-dev: build-dev down start
+
+redeploy-dev: pull restart-dev

@@ -168,9 +168,9 @@ If `COORDINATOR_URL` is empty or the coordinator is unreachable, the bot runs st
 
 All commands from meshcore-bot are available, plus:
 
-| Command             | Description                                                    |
-| ------------------- | -------------------------------------------------------------- |
-| `botstatus`         | Coordinator connection status, active bot count, uptime        |
+| Command             | Description                                                            |
+| ------------------- | ---------------------------------------------------------------------- |
+| `botstatus`         | Coordinator connection status, active bot count, uptime                |
 | `bot_top_repeaters` | Top infrastructure relays seen by this bot, ranked by fan-in (DM only) |
 
 ## Updating
@@ -194,19 +194,15 @@ make up
 
 ### Submodule Version Management
 
-The `meshcore-bot` submodule is pinned to a tested version and updated deliberately by the maintainers. This ensures compatibility and reliable community coordination. All official upgrades are packaged and released by maintainers.
+The `meshcore-bot` submodule tracks the upstream `main` branch by default.
 
-> **Warning:** Manually changing the submodule version may break community coordination and is not recommended. Only do this if you understand the risks and accept that your bot may not interoperate correctly with others.
-
-To upgrade the pinned `meshcore-bot` submodule version (latest):
+To update the submodule to the latest `main` branch revision:
 
 ```bash
 git submodule update --remote --merge
 git add meshcore-bot
 git commit -m 'chore: update meshcore-bot submodule'
-make build
-make down
-make up
+make restart
 ```
 
 If you need to temporarily pin to a specific commit (bug resolution):
@@ -216,12 +212,25 @@ cd meshcore-bot
 git fetch
 git checkout <commit-sha>   # or a branch/tag, e.g. git checkout main
 cd ..
-make build
-make down
-make up
+make restart
 ```
 
-> **Note:** This is a local override only — it does not affect other users and will be overwritten the next time you run `make redeploy` from a fresh clone. If you find a fix is needed upstream, please open an issue so the maintainers can update the pinned version for everyone.
+If you want to track the bleeding-edge `dev` branch from `meshcore-bot`:
+
+```bash
+make redeploy-dev
+```
+
+This pulls the latest community code, updates the submodule to `dev`, and rebuilds. For ongoing updates while staying on `dev`, use `make redeploy-dev` instead of `make redeploy`.
+
+Silent failure risks on `dev`:
+
+- Coordinator interception can stop working if upstream changes patched method names/signatures (`send_response`, `send_channel_message`, `process_message`).
+- Community dashboard stats can silently degrade if upstream DB schema changes affect `mesh_connections` or `complete_contact_tracking`.
+
+To switch back to `main`, run `make redeploy` — it resets the submodule to `main` as part of the normal update flow.
+
+> **Note:** This is a local override only — it does not affect other users. Use `make redeploy` to return to `main`.
 
 ## Pre-Built Docker Images
 
