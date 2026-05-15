@@ -777,6 +777,8 @@ class TestCommand(BaseCommand):
             hops_str = str(hops_val) if hops_val is not None else "?"
             if hops_val is None:
                 hops_label = "?"
+            elif hops_val == 0:
+                hops_label = "Direct"
             elif hops_val == 1:
                 hops_label = "1 hop"
             else:
