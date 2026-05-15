@@ -168,10 +168,13 @@ If `COORDINATOR_URL` is empty or the coordinator is unreachable, the bot runs st
 
 All commands from meshcore-bot are available, plus:
 
-| Command             | Description                                                            |
-| ------------------- | ---------------------------------------------------------------------- |
-| `botstatus`         | Coordinator connection status, active bot count, uptime                |
-| `bot_top_repeaters` | Top infrastructure relays seen by this bot, ranked by fan-in (DM only) |
+| Command             | Description                                                             |
+| ------------------- | ----------------------------------------------------------------------- |
+| `botstatus`         | Coordinator connection status, active bot count, uptime                 |
+| `bot_top_repeaters` | Top infrastructure relays seen by this bot, ranked by fan-in (DM only)  |
+| `test`              | Custom `test`/`t` response format with optional phrase and path metrics |
+
+Additional `Keywords.test` placeholders: `direct_signal` (direct/0-hop SNR+RSSI only) and `path_hash_size` (path byte length; direct empty unless explicit metadata, unknown `?`).
 
 ## Updating
 

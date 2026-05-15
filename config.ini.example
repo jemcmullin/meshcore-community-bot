@@ -72,13 +72,15 @@ airnow_api_key =
 # {connection_info} - Path info, SNR(last hop), and RSSI(last hop) combined (e.g., "01,5f (2 hops) | SNR: 15 dB | RSSI: -120 dBm")
 # {snr} - Signal-to-noise ratio of last hop in dB
 # {rssi} - Received signal strength indicator of last hop in dBm
+# {direct_signal} - Direct-only signal summary ("SNR: ... dB | RSSI: ... dBm" for 0-hop/direct, empty for hopped messages)
+# {path_hash_size} - Path byte length as a number (direct: empty unless explicitly present in message metadata, unknown: "?")
 # {timestamp} - Message timestamp in HH:MM:SS format
 # {path} - Message routing path (e.g., "01,5f (2 hops)")
 # {path_distance} - Total distance between all hops in path with locations (e.g., "123.4km (3 segs, 1 no-loc)")
 # {firstlast_distance} - Distance between first and last repeater in path (e.g., "45.6km" or empty if locations missing)
 # {elapsed} - Elapsed time (e.g. 1234ms) or "Sync Device Clock" when device clock is invalid (use {elapsed} only; do not append ms)
 ping = Pong
-test = "@[{sender}]{phrase_part} | {path} | Dist Travel: {path_distance} in {elapsed}"
+test = "@[{sender}]{phrase_part} | {path} {direct_signal} | Traveled: {path_distance}"
 help = "Bot Help: (t)est, ping, (p)ath, channels, (mt)multitest, prefix, sun, moon, solar, dice, roll, joke | More: 'help <cmnd>'"
 cmd = "Bot Cmds: test, ping, help, path, channels, mt, prefix, sun, moon, solar, dice, roll, joke, stats"
 
