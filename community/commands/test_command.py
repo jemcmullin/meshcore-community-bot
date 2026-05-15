@@ -679,53 +679,59 @@ class TestCommand(BaseCommand):
         """Build path_hash_size placeholder content.
 
         Rules:
-        - Emit only 1, 2, or 3 as valid values.
+        - Emit only 1, 2, or 3 as valid values (bytes per hop).
         - Return '?' when value is unavailable or outside 1/2/3.
         """
         routing_info = getattr(message, 'routing_info', None)
-        explicit_path_bytes: Optional[int] = None
+        bytes_per_hop: Optional[int] = None
 
-        # Prefer explicit metadata from routing info.
+        # Prefer explicit bytes_per_hop from routing info
         if routing_info:
-            raw_path_byte_length = routing_info.get('path_byte_length')
-            if isinstance(raw_path_byte_length, int) and raw_path_byte_length >= 0:
-                explicit_path_bytes = raw_path_byte_length
-            else:
-                bytes_per_hop = routing_info.get('bytes_per_hop')
-                path_length = routing_info.get('path_length')
-                if (
-                    isinstance(bytes_per_hop, int)
-                    and bytes_per_hop >= 0
-                    and isinstance(path_length, int)
-                    and path_length >= 0
-                ):
-                    explicit_path_bytes = bytes_per_hop * path_length
-                else:
-                    path_nodes = routing_info.get('path_nodes') or []
-                    if path_nodes:
-                        total = 0
-                        for node in path_nodes:
-                            node_str = str(node).strip()
-                            if not node_str:
-                                continue
-                            total += len(node_str) // 2
-                        explicit_path_bytes = total
+            bytes_per_hop = routing_info.get('bytes_per_hop')
+            if isinstance(bytes_per_hop, int) and bytes_per_hop >= 0:
+                if bytes_per_hop in (1, 2, 3):
+                    return str(bytes_per_hop)
+                # else: bytes_per_hop exists but not valid (1, 2, 3), try calculating instead
 
-        def _valid_path_hash_size(value: Optional[int]) -> Optional[str]:
-            if value in (1, 2, 3):
-                return str(value)
-            return None
+            # Try to calculate bytes_per_hop from total path bytes and path length
+            total_path_bytes = routing_info.get('path_byte_length')
+            if not isinstance(total_path_bytes, int) or total_path_bytes < 0:
+                # Try calculating from path_nodes
+                path_nodes = routing_info.get('path_nodes') or []
+                if path_nodes:
+                    total_path_bytes = 0
+                    for node in path_nodes:
+                        node_str = str(node).strip()
+                        if node_str:
+                            total_path_bytes += len(node_str) // 2
 
-        valid_explicit = _valid_path_hash_size(explicit_path_bytes)
-        if valid_explicit is not None:
-            return valid_explicit
+            path_length = routing_info.get('path_length')
+            if (
+                isinstance(total_path_bytes, int)
+                and total_path_bytes > 0
+                and isinstance(path_length, int)
+                and path_length > 0
+            ):
+                calculated_bytes_per_hop = total_path_bytes // path_length
+                if calculated_bytes_per_hop in (1, 2, 3):
+                    return str(calculated_bytes_per_hop)
 
+        # Fallback: try to derive from message.path string
         path_text = (getattr(message, 'path', None) or '').strip()
         if path_text:
-            derived_value = self._get_message_path_byte_length(message)
-            valid_derived = _valid_path_hash_size(derived_value)
-            if valid_derived is not None:
-                return valid_derived
+            total_path_bytes = self._get_message_path_byte_length(message)
+            hops_val = getattr(message, 'hops', None)
+            if hops_val is None and routing_info:
+                hops_val = routing_info.get('path_length')
+            if (
+                isinstance(total_path_bytes, int)
+                and total_path_bytes > 0
+                and isinstance(hops_val, int)
+                and hops_val > 0
+            ):
+                calculated_bytes_per_hop = total_path_bytes // hops_val
+                if calculated_bytes_per_hop in (1, 2, 3):
+                    return str(calculated_bytes_per_hop)
 
         return "?"
 
