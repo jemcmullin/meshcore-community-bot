@@ -675,13 +675,12 @@ class TestCommand(BaseCommand):
         rssi_info = f"RSSI: {message.rssi or 'Unknown'} dBm"
         return f"{snr_info} | {rssi_info}"
 
-    def _build_path_hash_size(self, message: MeshMessage, is_zero_hop: bool) -> str:
+    def _build_path_hash_size(self, message: MeshMessage) -> str:
         """Build path_hash_size placeholder content.
 
         Rules:
-        - Value is path byte length (from message metadata when possible; otherwise derived).
-        - For direct/0-hop, return empty unless byte length is available from message metadata.
-        - Return '?' when path byte length cannot be determined.
+        - Emit only 1, 2, or 3 as valid values.
+        - Return '?' when value is unavailable or outside 1/2/3.
         """
         routing_info = getattr(message, 'routing_info', None)
         explicit_path_bytes: Optional[int] = None
@@ -712,17 +711,21 @@ class TestCommand(BaseCommand):
                             total += len(node_str) // 2
                         explicit_path_bytes = total
 
-        if is_zero_hop:
-            if explicit_path_bytes is not None:
-                return str(explicit_path_bytes)
-            return ""
+        def _valid_path_hash_size(value: Optional[int]) -> Optional[str]:
+            if value in (1, 2, 3):
+                return str(value)
+            return None
 
-        if explicit_path_bytes is not None:
-            return str(explicit_path_bytes)
+        valid_explicit = _valid_path_hash_size(explicit_path_bytes)
+        if valid_explicit is not None:
+            return valid_explicit
 
         path_text = (getattr(message, 'path', None) or '').strip()
         if path_text:
-            return str(self._get_message_path_byte_length(message))
+            derived_value = self._get_message_path_byte_length(message)
+            valid_derived = _valid_path_hash_size(derived_value)
+            if valid_derived is not None:
+                return valid_derived
 
         return "?"
 
@@ -757,7 +760,7 @@ class TestCommand(BaseCommand):
             is_zero_hop = self._is_zero_hop_message(message)
             connection_info = self._build_test_connection_info(message, is_zero_hop)
             direct_signal = self._build_direct_signal(message, is_zero_hop)
-            path_hash_size = self._build_path_hash_size(message, is_zero_hop)
+            path_hash_size = self._build_path_hash_size(message)
             timestamp = self.format_timestamp(message)
             elapsed = self.format_elapsed(message)
             path_display = self.get_path_display_string(message)
