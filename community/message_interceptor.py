@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import time
 from typing import Optional
 
 from .discord_webhook import send_to_discord
@@ -93,6 +94,10 @@ class MessageInterceptor:
     *args/**kwargs to preserve compatibility across submodule versions.
     """
 
+    # How long to remember the won/suppressed outcome for a token so that
+    # subsequent chunks of the same multi-part response are treated consistently.
+    _TOKEN_OUTCOME_TTL = 120.0  # seconds
+
     def __init__(self, bot, firmware_coordinator: FirmwareCoordinator):
         self.bot = bot
         self.fw = firmware_coordinator
@@ -102,6 +107,10 @@ class MessageInterceptor:
         self._discord_emergency_webhook = bot.config.get("Discord", "emergency_webhook_url", fallback="")
         self._discord_emergency_broadcast = bot.config.get("Discord", "emergency_broadcast_channel", fallback="")
         self._bot_name = bot.config.get("Bot", "bot_name", fallback="CommunityBot")
+
+        # Per-token outcome cache: maps request_token_16bit → ("won"|"suppressed", monotonic_time)
+        # Used to propagate the first-chunk outcome to all subsequent chunks of the same message.
+        self._token_outcomes: dict[int, tuple[str, float]] = {}
 
         # Save originals before patching
         self._original_handle_channel_message = bot.message_handler.handle_channel_message
@@ -156,203 +165,145 @@ class MessageInterceptor:
             current_message_var.reset(token)
     
     async def _coordinated_send_channel_message(self, channel, content, *args, **kwargs):
-        previously_coordinated = coordinated_var.get()
-        message = None
-        message_hash = ""
-        if not previously_coordinated: # Keyword Messages that call send_channel_message directly
-            try:
-                message = current_message_var.get()
-                should_send, message_hash = await self._coordinate_should_respond(message)
-                if not should_send:
-                    return True # Graceful silence to avoid error messages
-            except LookupError:
-                logger.warning('[COORDINATOR] send_channel_message no context, sending without coordination')
-
-        result = await self._original_send_channel_message(channel, content, *args, **kwargs)
-
-        if not previously_coordinated: # Keyword Message not yet reported
-            await self._report_message(message=message, bot_responded=result, message_hash=message_hash)
-
-        return result
-    
-    async def _coordinated_send_response(self, message, content: str, *args, **kwargs) -> bool:
-        """Intercept send_response calls, check with coordinator, and report message."""
-
-        should_send, message_hash = await self._coordinate_should_respond(message)
-        coordinated_var.set(True)
-
-        if should_send:
-            result = await self._original_send_response(message, content, *args, **kwargs)
-            # Forward bot response to Discord webhook
-            await self._discord_forward_response(message, content)
-        else:
-            result = False  # Did not send due to coordinator/fallback decision
-
-        await self._report_message(message, bot_responded=result, message_hash=message_hash)
-        return result
-
-    async def _coordinate_should_respond(self, message) -> Tuple[bool, str]:
-        """Decision tree on whether to respond to a message, based on coordinator input and fallback logic.
-        True = respond, False = do not respond, returned as soon as proper gate reached.
-        For DMs: send immediately (no coordination needed).
-        For channel messages: check with coordinator first, passing signal data for the bidding window to evaluate path quality.
-
-        Returns:
-            Tuple of (should_respond: bool, message_hash: str) hash for deduplication
-        """
-        logger.debug(f"[COORDINATOR] Intercepted message from {getattr(message, 'sender_id', None)}")
-        
-        # Compute message hash for deduplication
-        timestamp = message.timestamp or int(time.time())
-        message_hash = CoordinatorClient.compute_message_hash(
-            sender_pubkey=message.sender_pubkey or "",
-            content=message.content or "",
-            timestamp=timestamp,
-        )
-            
-        # DMs always go through - only this bot received the DM
-        if message.is_dm:
-            logger.info("[COORDINATOR] Message is a DM, bypassing coordinator")
-            asyncio.create_task(publish_web_viewer_dm_event(message, True, self.bot))
-            return True, message_hash
-
-        # If coordinator is not configured, send immediately
-        if not self.coordinator.is_configured:
-            logger.warning("[COORDINATOR] Coordinator not configured, sending without coordination")
-            asyncio.create_task(publish_web_viewer_coordination_event(
-                bot=self.bot,
-                message=message,
-                message_hash=message_hash,
-                stage="fallback_sent",
-                reason="coordinator_not_configured",
-                command=(message.content or "").split()[0] if message.content else "",
-            ))
-            return True, message_hash
-
-        logger.debug("[COORDINATOR] Message is a channel message, checking with coordinator before responding")
-
-        # Extract content prefix safely
-        words = (message.content or "").split()
-        content_prefix = words[0][:50] if words else ""
-        hops = message.hops or 0
-
-        logger.debug(f"[COORDINATOR] Calling should_respond with: message_hash={message_hash}, sender_pubkey={message.sender_pubkey}, channel={message.channel}, content_prefix={content_prefix}, is_dm=False, timestamp={timestamp}, snr={message.snr}, rssi={message.rssi}, hops={message.hops}, path={message.path}")
-        asyncio.create_task(publish_web_viewer_coordination_event(
-            bot=self.bot,
-            message=message,
-            message_hash=message_hash,
-            stage="bid",
-            command=content_prefix,
-        ))
-
-        # Ask coordinator with raw signal data; coordinator does the scoring
-        should_respond = await self.coordinator.should_respond(
-            message_hash=message_hash,
-            sender_pubkey=message.sender_pubkey or "",
-            channel=message.channel,
-            content_prefix=content_prefix,
-            is_dm=False,
-            timestamp=timestamp,
-            receiver_snr=message.snr,
-            receiver_rssi=message.rssi,
-            receiver_hops=message.hops,
-            receiver_path=message.path,
-        )
-
-        logger.debug(f"[COORDINATOR] should_respond result: {should_respond}")
-
-        if should_respond is not None and should_respond.get("should_respond", True):
-            # Coordinator says we should respond, possibly after a delay
-            delay_ms = should_respond.get("response_delay_ms", 0)
-            winner_name = should_respond.get("winner_name", "")
-            winner_score = should_respond.get("winner_score", 0.0)
-            reason = should_respond.get("reason", "")
-            self.coordinator.current_score = winner_score
-            logger.info(f"[COORDINATOR] assigned response to us for: {content_prefix} (score={winner_score:.3f}, reason={reason}, delay={delay_ms}ms)")
-            asyncio.create_task(publish_web_viewer_coordination_event(
-                bot=self.bot,
-                message=message,
-                message_hash=message_hash,
-                stage="assigned_us",
-                winner_name=winner_name,
-                winner_score=winner_score,
-                reason=reason,
-                delay_ms=delay_ms,
-                command=content_prefix,
-            ))
-            await self.timing.wait_delay_ms(delay_ms)
-            return True, message_hash
-
-        if should_respond is not None and not should_respond.get("should_respond", True):
-            # Coordinator assigned to another bot
-            winner_name = should_respond.get("winner_name", "")
-            winner_score = should_respond.get("winner_score", 0.0)
-            reason = should_respond.get("reason", "")
-            self.coordinator.current_score = winner_score
-            logger.info(f"[COORDINATOR] assigned response to another bot for: {content_prefix} (winner={winner_name}, score={winner_score:.3f}, reason={reason})")
-            asyncio.create_task(publish_web_viewer_coordination_event(
-                bot=self.bot,
-                message=message,
-                message_hash=message_hash,
-                stage="assigned_other",
-                winner_name=winner_name,
-                winner_score=winner_score,
-                reason=reason,
-                command=content_prefix,
-            ))
-            return False, message_hash
-
-        # should_respond is None - coordinator unreachable, use hop-based fallback delay
-        logger.info(f"[COORDINATOR] unreachable, using hop-based fallback (hops={hops})")
-        await self.timing.fallback_wait_before_responding(hops=hops)
-        logger.info("[COORDINATOR] Fallback: sending response after delay")
-        asyncio.create_task(publish_web_viewer_coordination_event(
-            bot=self.bot,
-            message=message,
-            message_hash=message_hash,
-            stage="fallback_sent",
-            command=content_prefix,
-        ))
-        return True, message_hash  # Send after fallback delay
-
-    async def _report_message(self, message, bot_responded: bool = False, message_hash: str = ""):
-        """Report the message to the PacketReporter for batch ingestion."""
-        if not self.reporter:
-            return
+        """Coordinate keyword-triggered channel messages (no inbound MeshMessage in signature)."""
+        if coordinated_var.get():
+            # Already coordinated by _coordinated_send_response for this message — just send.
+            return await self._original_send_channel_message(channel, content, *args, **kwargs)
 
         try:
-            timestamp = message.timestamp or int(time.time())
-            if not message_hash:
-                message_hash = CoordinatorClient.compute_message_hash(
-                    sender_pubkey=message.sender_pubkey or "",
-                    content=message.content or "",
-                    timestamp=timestamp,
+            message = current_message_var.get()
+        except LookupError:
+            # No inbound context (e.g. scheduled broadcast) — send immediately.
+            logger.debug("send_channel_message: no current_message context, sending immediately")
+            return await self._original_send_channel_message(channel, content, *args, **kwargs)
+
+        if message.is_dm:
+            return await self._original_send_channel_message(channel, content, *args, **kwargs)
+
+        fp_input = _to_fingerprint_input(message)
+        send_fn = lambda text: self._original_send_channel_message(channel, text, *args, **kwargs)
+        return await self._firmware_coordinate_and_send(fp_input, content, send_fn, message)
+
+    async def _coordinated_send_response(self, message, content: str, *args, **kwargs) -> bool:
+        """Coordinate command responses via firmware timing protocol."""
+        # DMs bypass coordination — only this bot received the DM.
+        if message.is_dm:
+            result = await self._original_send_response(message, content, *args, **kwargs)
+            await self._discord_forward_response(message, content)
+            return result
+
+        fp_input = _to_fingerprint_input(message)
+        coordinated_var.set(True)  # prevent double-coordination if send_channel_message is also called
+        send_fn = lambda text: self._original_send_response(message, text, *args, **kwargs)
+        return await self._firmware_coordinate_and_send(fp_input, content, send_fn, message)
+
+    def _purge_stale_token_outcomes(self) -> None:
+        now = time.monotonic()
+        self._token_outcomes = {
+            t: v for t, v in self._token_outcomes.items()
+            if now - v[1] < self._TOKEN_OUTCOME_TTL
+        }
+
+    async def _firmware_coordinate_and_send(self, fp_input: dict, content: str, send_fn, message) -> bool:
+        """Core firmware coordination: compute delay, sleep, check suppression, send.
+
+        For multi-chunk responses (same request token), the outcome of the first
+        chunk is cached in _token_outcomes so that:
+          - Subsequent chunks are sent immediately without re-coordinating ("won").
+          - Subsequent chunks are silently dropped if the first was suppressed.
+
+        Flow for first chunk:
+          1. Prepend [xxxx] request token to the response text.
+          2. Ask FirmwareCoordinator to schedule the response — returns (entry, delay_ms)
+             or None if the response was recently sent (duplicate suppression).
+          3. Sleep for delay_ms.  During this sleep the asyncio loop processes
+             incoming messages; if a peer bot responds first, observe_peer_message()
+             will mark entry.suppressed = True.
+          4. If not suppressed, call send_fn.  Record "won" in _token_outcomes.
+          5. If suppressed, record "suppressed" in _token_outcomes and return False.
+        """
+        command = _first_word(message.content if message else None)
+        token_hex = _token_hex(fp_input)
+        tokenised = prepend_request_token_text(fp_input, content)
+        req_token_16 = request_token_for_message(fp_input) & 0xFFFF
+
+        self._purge_stale_token_outcomes()
+
+        prior = self._token_outcomes.get(req_token_16)
+        if prior is not None:
+            outcome, _ = prior
+            if outcome == "suppressed":
+                # A peer bot already handled this message — drop this chunk too.
+                logger.info(
+                    "Chunk suppressed (token=[%s] peer already responded, dropping chunk)",
+                    token_hex,
                 )
+                asyncio.create_task(publish_web_viewer_fw_event(
+                    self.bot, message, "fw_suppressed", delay_ms=0, command=command, token_hex=token_hex,
+                ))
+                return False
+            elif outcome == "won":
+                # We already won the race for this token — send this chunk immediately
+                # without re-coordinating (same message, just a continuation packet).
+                logger.info(
+                    "Chunk sent without re-coordination (token=[%s] already won)",
+                    token_hex,
+                )
+                sent = await send_fn(tokenised)
+                await self._discord_forward_response(message, tokenised)
+                asyncio.create_task(publish_web_viewer_fw_event(
+                    self.bot, message, "fw_sent", delay_ms=0, command=command, token_hex=token_hex,
+                ))
+                logger.info("Sent chunk (token=[%s] command=%s)", token_hex, command)
+                return sent
 
-            # Detect if this was a command
-            words = (message.content or "").split()
-            content_prefix = words[0].lower() if words else ""
-            was_command = bool(content_prefix)  # All intercepted messages are commands
-            command_name = content_prefix if was_command else None
+        # First chunk for this token — run full coordination.
+        result = self.fw.schedule_response(fp_input, tokenised)
+        if result is None:
+            # Recently sent — skip silently (duplicate suppression).
+            logger.debug("Skipping duplicate response for token=[%s]", token_hex)
+            return False
 
-            await self.reporter.add_message(
-                message_hash=message_hash,
-                sender_pubkey=message.sender_pubkey or "",
-                sender_name=message.sender_id or "",
-                channel=message.channel,
-                content=message.content or "",
-                is_dm=message.is_dm,
-                hops=message.hops,
-                path=message.path,
-                snr=message.snr,
-                rssi=message.rssi,
-                timestamp=timestamp,
-                was_command=was_command,
-                command_name=command_name,
-                bot_responded=bot_responded,
+        entry, delay_ms = result
+        logger.debug(
+            "Firmware coordination: sleeping %dms before responding (token=[%s] command=%s)",
+            delay_ms, token_hex, command,
+        )
+        asyncio.create_task(publish_web_viewer_fw_event(
+            self.bot, message, "fw_pending", delay_ms=delay_ms, command=command, token_hex=token_hex,
+        ))
+
+        await asyncio.sleep(delay_ms / 1000.0)
+
+        if entry.suppressed:
+            self._token_outcomes[req_token_16] = ("suppressed", time.monotonic())
+            logger.info(
+                "Response suppressed by peer bot (token=[%s] command=%s delay=%dms)",
+                token_hex, command, delay_ms,
             )
-        except Exception as e:
-            logger.debug(f"Failed to report message: {e}")
+            asyncio.create_task(publish_web_viewer_fw_event(
+                self.bot, message, "fw_suppressed", delay_ms=delay_ms, command=command, token_hex=token_hex,
+            ))
+            return False
+
+        # Secondary check: has the exact response fingerprint already been seen?
+        if suppress_by_response_fingerprint(self.fw.pending, entry.response_fingerprint):
+            self._token_outcomes[req_token_16] = ("suppressed", time.monotonic())
+            logger.info("Response suppressed by response fingerprint (token=[%s])", token_hex)
+            asyncio.create_task(publish_web_viewer_fw_event(
+                self.bot, message, "fw_suppressed", delay_ms=delay_ms, command=command, token_hex=token_hex,
+            ))
+            return False
+
+        self._token_outcomes[req_token_16] = ("won", time.monotonic())
+        sent = await send_fn(tokenised)
+        self.fw.mark_sent(entry)
+        await self._discord_forward_response(message, tokenised)
+        asyncio.create_task(publish_web_viewer_fw_event(
+            self.bot, message, "fw_sent", delay_ms=delay_ms, command=command, token_hex=token_hex,
+        ))
+        logger.info("Sent response (token=[%s] command=%s delay=%dms)", token_hex, command, delay_ms)
+        return sent
 
     def _get_discord_webhook_for_channel(self, channel: str) -> str:
         """Return the Discord webhook URL for a given channel, or empty string."""
