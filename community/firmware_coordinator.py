@@ -25,7 +25,6 @@ from .meshcore_response_coordinator import (
     RecentBotResponse,
     record_recent,
     recently_sent,
-    request_token_for_peer_message,
     response_delay_millis,
     suppress_by_request_token,
 )
@@ -50,6 +49,8 @@ class FirmwareCoordinator:
         """Derive bot identity seed from public key (first 4 bytes, big-endian uint32)."""
         try:
             key_bytes = bytes.fromhex(public_key_hex)
+            if len(key_bytes) < 4:
+                raise ValueError("public key shorter than 4 bytes")
             self.bot_identity_seed = int.from_bytes(key_bytes[:4], "big")
             logger.info(
                 "Firmware coordinator identity seed set: 0x%08x (from pubkey %s...)",
@@ -81,6 +82,7 @@ class FirmwareCoordinator:
         self,
         fp_input: dict,
         response_text: str,
+        now_ms: Optional[int] = None,
     ) -> Optional[tuple[PendingBotResponse, int]]:
         """Compute delay and create a pending entry for a new response.
 
@@ -91,7 +93,8 @@ class FirmwareCoordinator:
         Returns (entry, delay_ms) or None if the response was recently sent
         and should be skipped entirely.
         """
-        now_ms = _now_ms()
+        if now_ms is None:
+            now_ms = _now_ms()
         self.cleanup(now_ms)
 
         from .meshcore_request_token import request_fingerprint_for_message
@@ -117,8 +120,8 @@ class FirmwareCoordinator:
         entry = PendingBotResponse(
             request_fingerprint=req_fp,
             response_fingerprint=resp_fp,
-            due_at_millis=now_ms + delay_ms,
-            expires_at_millis=now_ms + BOT_RESPONSE_PENDING_TTL_MILLIS,
+            due_at_millis=(now_ms + delay_ms) & 0xFFFFFFFF,
+            expires_at_millis=(now_ms + BOT_RESPONSE_PENDING_TTL_MILLIS) & 0xFFFFFFFF,
             active=True,
             sent=False,
             suppressed=False,
@@ -133,9 +136,10 @@ class FirmwareCoordinator:
         )
         return entry, delay_ms
 
-    def mark_sent(self, entry: PendingBotResponse) -> None:
+    def mark_sent(self, entry: PendingBotResponse, now_ms: Optional[int] = None) -> None:
         """Record that a pending response was actually sent."""
-        now_ms = _now_ms()
+        if now_ms is None:
+            now_ms = _now_ms()
         entry.sent = True
         record_recent(self.recent, entry.response_fingerprint, now_ms)
         logger.debug("Marked sent: resp_fp=0x%016x", entry.response_fingerprint)

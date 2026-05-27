@@ -7,10 +7,16 @@ at runtime.  Every assertion here is derived from a recorded firmware behavior.
 
 from __future__ import annotations
 
+import asyncio
+from configparser import ConfigParser
 from dataclasses import dataclass
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from community.firmware_coordinator import FirmwareCoordinator
+from community.message_interceptor import MessageInterceptor, raw_text_var
 from community.meshcore_request_token import (
     BotMessage,
     format_request_token,
@@ -257,3 +263,178 @@ def test_record_recent():
     record_recent(recent, 0x1234, 4000)
     assert recent[-1].response_fingerprint == 0x1234
     assert recent[-1].observed_at_millis == 4000
+
+
+# ---------------------------------------------------------------------------
+# Integration-style tests — patched interceptor flow
+# ---------------------------------------------------------------------------
+
+
+class _CapturingFirmwareCoordinator(FirmwareCoordinator):
+    def __init__(self):
+        super().__init__()
+        self.schedule_calls: list[tuple[dict, str, int | None]] = []
+        self.mark_calls: list[tuple[PendingBotResponse, int | None]] = []
+
+    def schedule_response(self, fp_input: dict, response_text: str, now_ms: int | None = None):
+        self.schedule_calls.append((dict(fp_input), response_text, now_ms))
+        return super().schedule_response(fp_input, response_text, now_ms)
+
+    def mark_sent(self, entry: PendingBotResponse, now_ms: int | None = None) -> None:
+        self.mark_calls.append((entry, now_ms))
+        super().mark_sent(entry, now_ms)
+
+
+def _build_message(raw_text: str):
+    sender, _, content = raw_text.partition(":")
+    return SimpleNamespace(
+        is_dm=False,
+        content=content.strip(),
+        sender_id=sender.strip(),
+        sender_pubkey="00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        timestamp=1710000000,
+        channel="#bot",
+        hops=2,
+    )
+
+
+def _build_interceptor_harness(monkeypatch, *, send_results=None):
+    import community.message_interceptor as message_interceptor_module
+    import community.firmware_coordinator as firmware_coordinator_module
+
+    config = ConfigParser()
+    config.add_section("Discord")
+    config.add_section("Bot")
+    config.set("Bot", "bot_name", "TestBot")
+
+    sent_payloads: list[str] = []
+    channel_payloads: list[tuple[str, str]] = []
+
+    send_queue = list(send_results or [True])
+
+    async def original_send_response(message, content, *args, **kwargs):
+        sent_payloads.append(content)
+        if send_queue:
+            return send_queue.pop(0)
+        return True
+
+    async def original_send_channel_message(channel, content, *args, **kwargs):
+        channel_payloads.append((channel, content))
+        if send_queue:
+            return send_queue.pop(0)
+        return True
+
+    bot = SimpleNamespace()
+    bot.config = config
+    bot.logger = Mock()
+    bot.message_handler = SimpleNamespace()
+    bot.command_manager = SimpleNamespace(
+        send_response=AsyncMock(side_effect=original_send_response),
+        send_channel_message=AsyncMock(side_effect=original_send_channel_message),
+    )
+
+    async def original_process_message(message, *args, **kwargs):
+        return await bot.command_manager.send_response(message, "Pong!")
+
+    async def original_handle_channel_message(event, *args, **kwargs):
+        message = _build_message(event.payload.get("text", ""))
+        return await bot.message_handler.process_message(message, *args, **kwargs)
+
+    bot.message_handler.handle_channel_message = original_handle_channel_message
+    bot.message_handler.process_message = original_process_message
+
+    firmware = _CapturingFirmwareCoordinator()
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(message_interceptor_module, "publish_web_viewer_fw_event", _noop)
+    monkeypatch.setattr(message_interceptor_module, "send_to_discord", _noop)
+    monkeypatch.setattr(firmware_coordinator_module, "response_delay_millis", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(firmware_coordinator_module.os, "urandom", lambda n: b"\x00" * n)
+
+    interceptor = MessageInterceptor(bot=bot, firmware_coordinator=firmware)
+    return SimpleNamespace(
+        bot=bot,
+        firmware=firmware,
+        interceptor=interceptor,
+        sent_payloads=sent_payloads,
+        channel_payloads=channel_payloads,
+    )
+
+
+def test_interceptor_schedules_unprefixed_response_but_sends_prefixed(monkeypatch):
+    harness = _build_interceptor_harness(monkeypatch)
+    event = SimpleNamespace(payload={"text": "HOWL: !ping"})
+
+    result = asyncio.run(harness.bot.message_handler.handle_channel_message(event))
+
+    assert result is True
+    assert len(harness.firmware.schedule_calls) == 1
+
+    fp_input, response_text, now_ms = harness.firmware.schedule_calls[0]
+    assert fp_input["text"] == "HOWL: !ping"
+    assert response_text == "Pong!"
+    assert now_ms is not None
+    assert harness.sent_payloads == [prepend_request_token_text(fp_input, "Pong!")]
+    assert len(harness.firmware.mark_calls) == 1
+    assert harness.firmware.mark_calls[0][0].sent is True
+
+
+def test_interceptor_suppresses_pending_response_when_peer_token_arrives(monkeypatch):
+    harness = _build_interceptor_harness(monkeypatch)
+    event = SimpleNamespace(payload={"text": "HOWL: !ping"})
+
+    async def suppressing_sleep(delay):
+        assert len(harness.firmware.schedule_calls) == 1
+        fp_input, _, _ = harness.firmware.schedule_calls[0]
+        token = request_token_for_message(fp_input)
+        harness.firmware.observe_peer_message(f"[{token:04x}] Peer won")
+
+    with patch("community.message_interceptor.asyncio.sleep", new=suppressing_sleep):
+        result = asyncio.run(harness.bot.message_handler.handle_channel_message(event))
+
+    assert result is False
+    assert harness.sent_payloads == []
+    assert harness.firmware.mark_calls == []
+    assert harness.interceptor._original_send_response.await_count == 0
+
+
+def test_interceptor_multi_chunk_followup_uses_cached_win_without_reschedule(monkeypatch):
+    harness = _build_interceptor_harness(monkeypatch)
+    message = _build_message("HOWL: !trace")
+    token = raw_text_var.set("HOWL: !trace")
+    try:
+        first = asyncio.run(harness.bot.command_manager.send_response(message, "Chunk one"))
+        second = asyncio.run(harness.bot.command_manager.send_response(message, "Chunk two"))
+    finally:
+        raw_text_var.reset(token)
+
+    assert first is True
+    assert second is True
+    assert len(harness.firmware.schedule_calls) == 1
+    fp_input, _, _ = harness.firmware.schedule_calls[0]
+    assert harness.sent_payloads == [
+        prepend_request_token_text(fp_input, "Chunk one"),
+        prepend_request_token_text(fp_input, "Chunk two"),
+    ]
+
+
+def test_interceptor_send_failure_does_not_mark_sent_or_cache_win(monkeypatch):
+    harness = _build_interceptor_harness(monkeypatch, send_results=[False, True])
+    message = _build_message("HOWL: !ping")
+    token = raw_text_var.set("HOWL: !ping")
+    try:
+        first = asyncio.run(harness.bot.command_manager.send_response(message, "Pong!"))
+        second = asyncio.run(harness.bot.command_manager.send_response(message, "Pong!"))
+    finally:
+        raw_text_var.reset(token)
+
+    assert first is False
+    assert second is True
+    assert harness.firmware.mark_calls == [] or len(harness.firmware.mark_calls) == 1
+    assert len(harness.firmware.schedule_calls) == 2
+    if harness.firmware.mark_calls:
+        assert harness.firmware.mark_calls[0][0].sent is True
+
+

@@ -148,8 +148,10 @@ class CommunityBot(MeshCoreBot):
 
     async def connect(self):
         """Connect to radio and seed the firmware coordinator identity."""
-        await super().connect()
-        self._seed_firmware_coordinator()
+        result = await super().connect()
+        if result:
+            self._seed_firmware_coordinator()
+        return result
 
     def _seed_firmware_coordinator(self):
         """Set coordinator identity seed from radio public key after connect."""

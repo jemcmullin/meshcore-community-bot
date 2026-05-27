@@ -24,21 +24,24 @@ class BotstatusCommand(BaseCommand):
             fw = getattr(self.bot, "firmware_coordinator", None)
 
             if fw is None:
-                await self.send_response(message, "Mode: standalone (no coordinator)")
+                await self.send_response(message, "Firmware coordinator not initialised")
                 return True
 
-            seed = fw.bot_identity_seed
+            seed_hex = f"{fw.bot_identity_seed:08x}"[-4:]
             pending = fw.queue_depth()
             recent = len(fw.recent)
-            uptime = int(fw.uptime_seconds())
+            start_time = getattr(self.bot, "start_time", None)
+            if start_time is not None:
+                uptime = int(time.time() - start_time)
+            else:
+                uptime = int(fw.uptime_seconds())
             hours = uptime // 3600
             mins = (uptime % 3600) // 60
 
             parts = [
                 "Mode: firmware-native",
-                f"Seed: 0x{seed:08x}",
                 f"Pending: {pending}  Recent: {recent}",
-                f"Uptime: {hours}h {mins}m",
+                f"Seed: ...{seed_hex}  Uptime: {hours}h {mins}m",
                 f"Base: {BOT_RESPONSE_DELAY_BASE_MILLIS}ms  Jitter: {BOT_RESPONSE_DELAY_JITTER_MILLIS}ms",
             ]
 

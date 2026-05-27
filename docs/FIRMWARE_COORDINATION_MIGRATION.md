@@ -80,8 +80,10 @@ implementation. They are validated by their own test scripts.
 
 ### `community/meshcore_response_coordinator.py`
 
-**Action:** Copy verbatim from `community/standalone_request_token/`. Do not
-modify. All other community code imports from these two copies.
+**Action:** Start from `community/standalone_request_token/` and preserve
+firmware-exact behavior. Byte-for-byte identity is not required as long as the
+result still matches firmware bot fingerprinting and timing semantics exactly.
+All other community code imports from these two copies.
 
 ---
 
@@ -126,7 +128,7 @@ If found:
 - `message_fp_input` is the normalised dict produced by `_to_fingerprint_input()`
   (see MeshMessage mapping section).
 - Compute `request_fp = request_fingerprint_for_message(message_fp_input)`.
-- Compute `response_fp = response_fingerprint_for_message(message_fp_input, response_text)`.
+- Compute `response_fp = response_fingerprint_for_message(message_fp_input, response_text)` using the unprefixed response text.
 - Check `recently_sent(self.recent, response_fp, now_ms)` → if True return `None`
   (caller silences without sending).
 - Build `PendingBotResponse(request_fingerprint=request_fp, response_fingerprint=response_fp)`.
@@ -269,13 +271,26 @@ Same patch targets as current.
        return False
 
 8. prefixed_content = prepend_request_token_text(fp_input, content)
-   result = await self._original_send_response(message, prefixed_content, *args, **kwargs)
+     result = await self._original_send_response(message, prefixed_content, *args, **kwargs)
    if result:
        now_ms2 = int(time.time() * 1000) & 0xFFFFFFFF
        self.firmware_coordinator.mark_sent(entry, now_ms2)
        await self._discord_forward_response(message, prefixed_content)
    return result
 ```
+
+#### Intentional multi-chunk behavior
+
+Multi-chunk responses keep a per-token outcome cache in `MessageInterceptor`.
+
+- After the first chunk wins coordination for a given request token, later chunks
+  for that same token are sent immediately without re-running the delay race.
+- If the first chunk is suppressed, later chunks for that token are also dropped.
+- This is an intentional extension beyond the minimal single-response flow so
+  multi-packet bot replies stay internally consistent.
+- Only the first chunk participates in `schedule_response()` and `mark_sent()`.
+  The response fingerprint for that first chunk must still be computed from the
+  unprefixed response text so firmware-compatible dedup remains exact.
 
 #### `_coordinated_send_channel_message(self, channel, content, *args, **kwargs) -> bool`
 
@@ -489,9 +504,9 @@ the submodule web viewer; it should not need significant changes otherwise.
 ### `community/web_viewer_community_page.py`
 
 Remove coordinator-specific dashboard widgets (bid results, winner scores,
-coordinator URL/status). Add firmware coordination widgets: pending count,
-recent count, last suppression timestamp. These values can be read directly
-from `bot.firmware_coordinator`.
+coordinator URL/status). Add firmware coordination widgets based on firmware
+event stream data. Event-derived aggregates are acceptable for now; direct
+reads from `bot.firmware_coordinator` are optional rather than required.
 
 ---
 
@@ -744,9 +759,8 @@ be restored in `restore()` or the bot will segfault/error on reconnect.
 
 ### 10. Web viewer community page
 
-`web_viewer_community_page.py` reads from `bot.coordinator` to display
-connection status. This reference must be removed or guarded with `getattr`
-before the coordinator attribute disappears.
+`web_viewer_community_page.py` must not depend on `bot.coordinator`. Firmware
+coordination status can be rendered from emitted `fw_*` packet-stream events.
 
 ### 11. Firmware bots vs Python-only network
 

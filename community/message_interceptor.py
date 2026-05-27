@@ -25,7 +25,6 @@ from .meshcore_request_token import (
     prepend_request_token_text,
     request_token_for_message,
 )
-from .meshcore_response_coordinator import suppress_by_response_fingerprint
 from .web_viewer_packet_stream import publish_web_viewer_fw_event
 
 logger = logging.getLogger("CommunityBot")
@@ -212,15 +211,15 @@ class MessageInterceptor:
           - Subsequent chunks are sent immediately without re-coordinating ("won").
           - Subsequent chunks are silently dropped if the first was suppressed.
 
-        Flow for first chunk:
-          1. Prepend [xxxx] request token to the response text.
-          2. Ask FirmwareCoordinator to schedule the response — returns (entry, delay_ms)
+          Flow for first chunk:
+             1. Ask FirmwareCoordinator to schedule the unprefixed response — returns (entry, delay_ms)
              or None if the response was recently sent (duplicate suppression).
-          3. Sleep for delay_ms.  During this sleep the asyncio loop processes
+             2. Sleep for delay_ms.  During this sleep the asyncio loop processes
              incoming messages; if a peer bot responds first, observe_peer_message()
              will mark entry.suppressed = True.
-          4. If not suppressed, call send_fn.  Record "won" in _token_outcomes.
-          5. If suppressed, record "suppressed" in _token_outcomes and return False.
+             3. If not suppressed, prepend [xxxx] and call send_fn.  Record "won" in
+                 _token_outcomes only on successful send.
+             4. If suppressed, record "suppressed" in _token_outcomes and return False.
         """
         command = _first_word(message.content if message else None)
         token_hex = _token_hex(fp_input)
@@ -258,7 +257,8 @@ class MessageInterceptor:
                 return sent
 
         # First chunk for this token — run full coordination.
-        result = self.fw.schedule_response(fp_input, tokenised)
+        now_ms = int(time.time() * 1000) & 0xFFFFFFFF
+        result = self.fw.schedule_response(fp_input, content, now_ms)
         if result is None:
             # Recently sent — skip silently (duplicate suppression).
             logger.debug("Skipping duplicate response for token=[%s]", token_hex)
@@ -286,23 +286,18 @@ class MessageInterceptor:
             ))
             return False
 
-        # Secondary check: has the exact response fingerprint already been seen?
-        if suppress_by_response_fingerprint(self.fw.pending, entry.response_fingerprint):
-            self._token_outcomes[req_token_16] = ("suppressed", time.monotonic())
-            logger.info("Response suppressed by response fingerprint (token=[%s])", token_hex)
-            asyncio.create_task(publish_web_viewer_fw_event(
-                self.bot, message, "fw_suppressed", delay_ms=delay_ms, command=command, token_hex=token_hex,
-            ))
-            return False
-
-        self._token_outcomes[req_token_16] = ("won", time.monotonic())
         sent = await send_fn(tokenised)
-        self.fw.mark_sent(entry)
-        await self._discord_forward_response(message, tokenised)
-        asyncio.create_task(publish_web_viewer_fw_event(
-            self.bot, message, "fw_sent", delay_ms=delay_ms, command=command, token_hex=token_hex,
-        ))
-        logger.info("Sent response (token=[%s] command=%s delay=%dms)", token_hex, command, delay_ms)
+        if sent:
+            self._token_outcomes[req_token_16] = ("won", time.monotonic())
+            now_ms2 = int(time.time() * 1000) & 0xFFFFFFFF
+            self.fw.mark_sent(entry, now_ms2)
+            await self._discord_forward_response(message, tokenised)
+            asyncio.create_task(publish_web_viewer_fw_event(
+                self.bot, message, "fw_sent", delay_ms=delay_ms, command=command, token_hex=token_hex,
+            ))
+            logger.info("Sent response (token=[%s] command=%s delay=%dms)", token_hex, command, delay_ms)
+        else:
+            logger.warning("Response send failed after coordination (token=[%s] command=%s)", token_hex, command)
         return sent
 
     def _get_discord_webhook_for_channel(self, channel: str) -> str:
