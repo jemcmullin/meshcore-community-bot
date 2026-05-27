@@ -94,6 +94,8 @@ def _normalize_text(value: Union[str, BytesLike, None], input_len: int) -> bytes
         if pending_space:
             out.append(32)
             pending_space = False
+            if len(out) >= BOT_MAX_TEXT_LEN:
+                break
 
         out.append(byte_value)
 
