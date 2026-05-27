@@ -1,2 +1,2 @@
 # Community bot additions (submodule deps come from meshcore-bot/pyproject.toml)
-httpx>=0.26.0
+# No additional dependencies — firmware-native coordination uses only stdlib

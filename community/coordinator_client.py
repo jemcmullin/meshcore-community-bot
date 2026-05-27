@@ -1,8 +1,7 @@
-"""HTTP client for the MeshCore Coordinator API."""
+# This module has been removed.
+# Coordination is now firmware-native via community/firmware_coordinator.py.
+raise ImportError("coordinator_client has been removed — use firmware_coordinator instead")
 
-import hashlib
-import logging
-import time
 from pathlib import Path
 from typing import Optional
 

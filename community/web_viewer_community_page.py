@@ -70,7 +70,7 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
         <div id=\"network\"></div>
       </section>
       <section class=\"card\">
-        <h3>Bot Performance (Last 24hr)</h3>
+        <h3>Firmware Coordination (Last 24hr)</h3>
         <div id=\"coord\"></div>
       </section>
       <section class=\"card\">
@@ -80,7 +80,7 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
       <section class=\"card\" style=\"grid-column: 1/-1;\">
         <h3>Recent Coordination Events</h3>
         <table>
-          <thead><tr><th>Bid</th><th>Coordinated</th><th>Sender</th><th>Hops</th><th>Command</th><th>Action</th><th>Reason</th><th>Details</th></tr></thead>
+          <thead><tr><th>Time</th><th>Sender</th><th>Hops</th><th>Token</th><th>Command</th><th>Stage</th><th>Delay</th></tr></thead>
           <tbody id=\"events\"></tbody>
         </table>
       </section>
@@ -124,21 +124,18 @@ async function refresh() {
 
     const coord = data.coordination;
     const sc = coord.stage_counts;
-    const total = sc.bid || 0;
-    const responded = sc.assigned_us || 0;
-    const deferred = sc.assigned_other || 0;
-    const fallback = sc.fallback_sent || 0;
-    const respondedRandom = sc.assigned_us_random || 0;
-    const respondedBest = responded - respondedRandom;
-    const responseRate = total > 0 ? ((responded / total) * 100).toFixed(0) : 0;
-    const fallbackRate = total > 0 ? ((fallback / total) * 100).toFixed(0) : 0;
-    if (total === 0) {
-      document.getElementById('coord').innerHTML = '<div style=\"color:var(--muted)\">No coordination events in last hour</div>';
+    const pending = sc.fw_pending || 0;
+    const sent = sc.fw_sent || 0;
+    const suppressed = sc.fw_suppressed || 0;
+    const responded = sent + suppressed;
+    const suppressRate = responded > 0 ? ((suppressed / responded) * 100).toFixed(0) : 0;
+    if (pending === 0 && responded === 0) {
+      document.getElementById('coord').innerHTML = '<div style=\"color:var(--muted)\">No coordination events in last 24hr</div>';
     } else {
       document.getElementById('coord').innerHTML = `
-        <div><b>Coordinated:</b> ${total} (responded ${responded}, deferred ${deferred})</div>
-        <div><b>Response rate:</b> ${responseRate}% <span style="color:var(--muted);font-size:12px">(best: <span style="color:#2d8a4e">${respondedBest}</span> · random: <span style="color:#5a9a6e">${respondedRandom}</span>)</span></div>
-        <div><b>Fallback:</b> ${fallback} (${fallbackRate}%)</div>
+        <div><b>Pending:</b> ${pending} scheduled responses</div>
+        <div><b>Sent:</b> <span style="color:#2d8a4e;font-weight:bold">${sent}</span></div>
+        <div><b>Suppressed by peer:</b> <span style="color:#888">${suppressed}</span> (${suppressRate}%)</div>
       `;
     }
 
@@ -206,31 +203,22 @@ async function refresh() {
 
     const fmtTime = ts => ts ? new Date(ts * 1000).toLocaleTimeString('en-US', { hour12: true }) : '—';
     document.getElementById('events').innerHTML = data.coordination.recent_events.map(e => {
-      const stageColor = e.stage === 'assigned_us' ? (e.is_random ? '#5a9a6e' : '#2d8a4e')
-        : e.stage === 'assigned_other' ? '#888'
-        : e.stage === 'fallback_sent' ? '#b07d1a' : '#4c5b4c';
-      const stageText = e.stage === 'assigned_us' ? (e.is_random ? 'responded (random)' : 'responded (best)')
-        : e.stage === 'assigned_other' ? 'deferred'
-        : e.stage === 'fallback_sent' ? 'fallback' : e.stage;
-      const stageLabel = `<span style="color:${stageColor};font-weight:bold">${stageText}</span>`;
-      const bidTime = fmtTime(e.bid_timestamp || (e.stage === 'bid' ? e.timestamp : null));
-      const coordTime = e.stage !== 'bid' ? fmtTime(e.timestamp) : '—';
-      let detail = '';
-      if (e.winner) detail += `<span>handler: <b>${e.winner}</b></span> `;
-      if (e.score)  detail += `<span>score: ${e.score}</span> `;
-      if (e.delay)  detail += `<span style="color:var(--muted)">+${e.delay}</span>`;
+      const stageColor = e.stage === 'fw_sent' ? '#2d8a4e'
+        : e.stage === 'fw_suppressed' ? '#888'
+        : e.stage === 'fw_pending' ? '#b07d1a' : '#4c5b4c';
+      const stageLabel = `<span style="color:${stageColor};font-weight:bold">${e.stage || '—'}</span>`;
+      const evtTime = fmtTime(e.timestamp);
       return `
       <tr>
-        <td>${bidTime}</td>
-        <td>${coordTime}</td>
+        <td>${evtTime}</td>
         <td class="mono">${e.sender || '—'}</td>
         <td>${e.hops != null ? e.hops : '—'}</td>
+        <td class="mono">${e.token || '—'}</td>
         <td class="mono">${e.command || '—'}</td>
         <td>${stageLabel}</td>
-        <td style="color:var(--muted);font-size:13px">${e.reason || '—'}</td>
-        <td style="font-size:13px">${detail || '—'}</td>
+        <td style="color:var(--muted);font-size:13px">${e.delay || '—'}</td>
       </tr>`;
-    }).join('') || '<tr><td colspan="8">No recent coordination events</td></tr>';
+    }).join('') || '<tr><td colspan="7">No recent coordination events</td></tr>';
   } catch (err) {
     document.getElementById('meta').textContent = `Load failed: ${err}`;
   }
@@ -306,7 +294,7 @@ def _community_metrics_impl(viewer):
     import re
     now = time.time()
     top_repeaters = []
-    stage_counts = {"bid": 0, "assigned_us": 0, "assigned_other": 0, "fallback_sent": 0}
+    stage_counts = {"fw_pending": 0, "fw_sent": 0, "fw_suppressed": 0}
     recent_events = []
     event_count = 0
     total_nodes = 0
@@ -422,70 +410,28 @@ def _community_metrics_impl(viewer):
               continue
 
             cmd = (payload.get("command") or "").strip()
-            if not cmd.startswith("coord_"):
+            if not cmd.startswith("fw_"):
               continue
 
-            stage = cmd.replace("coord_", "", 1)
-            if stage not in stage_counts:
-              stage_counts[stage] = 0
-            stage_counts[stage] += 1
+            stage = cmd  # e.g. "fw_pending", "fw_sent", "fw_suppressed"
+            stage_counts[stage] = stage_counts.get(stage, 0) + 1
             event_count += 1
-            if stage == "assigned_us":
-              summary_raw = payload.get("response") or ""
-              if "random" in summary_raw:
-                stage_counts["assigned_us_random"] = stage_counts.get("assigned_us_random", 0) + 1
 
             summary = payload.get("response") or ""
-            # Strip stage= tag from summary display
-            summary_clean = _extract_score_from_summary(summary)
-            parts = _parse_summary_parts(summary_clean)
-            is_random = stage == "assigned_us" and "random" in (parts.get("reason") or "")
-            command_id = str(payload.get("command_id") or "")
+            parts = _parse_summary_parts(summary)
             recent_events.append(
               {
                 "timestamp": float(r["timestamp"]),
                 "stage": stage,
-                "command_id": command_id,
-                "is_random": is_random,
                 "sender": parts.get("sender"),
                 "hops": parts.get("hops"),
+                "token": parts.get("token"),
                 "command": parts.get("command"),
-                "winner": parts.get("winner"),
-                "score": parts.get("score"),
-                "reason": parts.get("reason"),
                 "delay": parts.get("delay"),
-                "summary": summary_clean,
               }
             )
 
-        # Pair bid+result events into single rows using message hash.
-        # Events are ordered DESC by timestamp, so the result usually appears before its bid.
-        combined_events = []
-        paired_bids = set()
-        for i, evt in enumerate(recent_events):
-          if i in paired_bids:
-            continue
-          if evt["stage"] == "bid":
-            combined_events.append(evt)
-            continue
-
-          evt_command_id = evt.get("command_id")
-          if not evt_command_id:
-            combined_events.append(evt)
-            continue
-
-          for j in range(i + 1, len(recent_events)):
-            if j in paired_bids:
-              continue
-            bid_evt = recent_events[j]
-            if bid_evt["stage"] != "bid":
-              continue
-            if bid_evt.get("command_id") == evt_command_id:
-              combined_events.append({**bid_evt, **evt, "bid_timestamp": bid_evt["timestamp"]})  # result fields win; preserve bid time
-              paired_bids.add(j)
-              break
-          else:
-            combined_events.append(evt)
+        combined_events = recent_events
 
         # DM statistics (last 24 hrs) - track sent DMs and ACK delivery confirmation
         if "packet_stream" in tables:

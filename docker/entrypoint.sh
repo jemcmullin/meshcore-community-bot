@@ -95,10 +95,8 @@ apply_config_override "Discord" "bot_webhook_url" "${DISCORD_BOT_WEBHOOK_URL}"
 apply_config_override "Discord" "emergency_webhook_url" "${DISCORD_EMERGENCY_WEBHOOK_URL}"
 apply_config_override "Discord" "emergency_broadcast_channel" "${DISCORD_EMERGENCY_BROADCAST_CHANNEL}"
 
-# Coordinator settings
-apply_config_override "Coordinator" "url" "${COORDINATOR_URL}"
-apply_config_override "Coordinator" "registration_key" "${COORDINATOR_REGISTRATION_KEY}"
-apply_config_override "Coordinator" "mesh_region" "${MESH_REGION}"
+# Community settings
+apply_config_override "Community" "mesh_region" "${MESH_REGION}"
 
 # ============================================
 # Serial-specific Setup

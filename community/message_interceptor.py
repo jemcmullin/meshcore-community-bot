@@ -1,43 +1,101 @@
-"""Intercepts bot responses to add coordinator-based coordination.
+"""Intercepts bot responses for firmware-native decentralized coordination.
 
-Patches CommandManager.send_response() to check with the coordinator
-before sending any response on a channel. DMs bypass coordination.
-Passes signal data (SNR, RSSI, hops, path) for path-quality-based bidding.
-Also reports messages to the PacketReporter for batch ingestion.
+Patches four meshcore-bot methods to coordinate channel message responses using
+the firmware FNV-1a request token protocol.  DMs bypass coordination entirely.
+
+Patch points:
+  1. MessageHandler.handle_channel_message  — captures raw packet text before colon-split
+  2. MessageHandler.process_message         — sets current_message_var context
+  3. CommandManager.send_response           — coordinates command responses
+  4. CommandManager.send_channel_message    — coordinates keyword-triggered responses
 """
 
+from __future__ import annotations
+
 import asyncio
-import logging
-import time
 import contextvars
-from typing import Tuple
+import logging
+from typing import Optional
 
-from .coordinator_client import CoordinatorClient
-from .response_timing import ResponseTiming
 from .discord_webhook import send_to_discord
-from .web_viewer_packet_stream import publish_web_viewer_dm_event, publish_web_viewer_coordination_event
+from .firmware_coordinator import FirmwareCoordinator
+from .meshcore_request_token import (
+    format_request_token,
+    prepend_request_token_text,
+    request_token_for_message,
+)
+from .meshcore_response_coordinator import suppress_by_response_fingerprint
+from .web_viewer_packet_stream import publish_web_viewer_fw_event
 
-logger = logging.getLogger('CommunityBot')
+logger = logging.getLogger("CommunityBot")
 
-# Tracking message for use in send_channel_message patch that would not have access otherwise
-current_message_var = contextvars.ContextVar('current_message')
-coordinated_var = contextvars.ContextVar('coordinated', default=False)
+# Context var: set to the current MeshMessage during process_message
+current_message_var: contextvars.ContextVar = contextvars.ContextVar("current_message")
+
+# Context var: True once send_response has already coordinated for this message
+# (prevents double-coordination when send_channel_message is also called)
+coordinated_var: contextvars.ContextVar = contextvars.ContextVar("coordinated", default=False)
+
+# Context var: raw payload text e.g. "HOWL: !ping" captured before colon-split
+raw_text_var: contextvars.ContextVar[str] = contextvars.ContextVar("raw_text", default="")
+
+
+def _channel_kind(message) -> int:
+    """Map MeshMessage channel to firmware channel_kind integer."""
+    if message.is_dm:
+        return 0
+    ch = message.channel or ""
+    if ch == "#bot":
+        return 1
+    if ch == "#testing":
+        return 2
+    return 3
+
+
+def _to_fingerprint_input(message) -> dict:
+    """Build the firmware fingerprint input dict from a MeshMessage."""
+    try:
+        pubkey_bytes = bytes.fromhex(message.sender_pubkey or "")
+    except (ValueError, TypeError):
+        pubkey_bytes = b""
+    key_prefix = pubkey_bytes[:6].ljust(6, b"\x00")
+    channel_kind = _channel_kind(message)
+    raw_text = raw_text_var.get(message.content or "")
+    return {
+        "channel_kind": channel_kind,
+        "channel_name": message.channel or "",
+        "sender_name": message.sender_id or "",
+        "sender_key_prefix": key_prefix,
+        "sender_key_prefix_len": 6,
+        "sender_timestamp": message.timestamp or 0,
+        "text": raw_text,
+        "path_hash_count": message.hops or 0,
+    }
+
+
+def _first_word(text: Optional[str]) -> str:
+    if not text:
+        return ""
+    words = text.split()
+    return words[0] if words else ""
+
+
+def _token_hex(fp_input: dict) -> str:
+    return format_request_token(request_token_for_message(fp_input))
+
 
 class MessageInterceptor:
-    """Intercepts send_response to coordinate with the central coordinator.
-    
-    Note on patched method signatures: All patched methods use *args, **kwargs for
+    """Installs firmware-native coordination patches on meshcore-bot.
+
+    Note on patched method signatures: All patched methods use *args/**kwargs for
     optional/forwarded parameters to remain compatible with upstream submodule changes.
-    We explicitly declare only the parameters we use (e.g., channel, content, message),
-    and forward everything else via *args/**kwargs to preserve compatibility across
-    submodule versions.
+    We explicitly declare only the parameters we use, and forward everything else via
+    *args/**kwargs to preserve compatibility across submodule versions.
     """
 
-    def __init__(self, bot, coordinator: CoordinatorClient, timing: ResponseTiming, reporter=None):
+    def __init__(self, bot, firmware_coordinator: FirmwareCoordinator):
         self.bot = bot
-        self.coordinator = coordinator
-        self.timing = timing
-        self.reporter = reporter
+        self.fw = firmware_coordinator
 
         # Discord webhook config
         self._discord_bot_webhook = bot.config.get("Discord", "bot_webhook_url", fallback="")
@@ -45,23 +103,52 @@ class MessageInterceptor:
         self._discord_emergency_broadcast = bot.config.get("Discord", "emergency_broadcast_channel", fallback="")
         self._bot_name = bot.config.get("Bot", "bot_name", fallback="CommunityBot")
 
-        # Save reference to the original
+        # Save originals before patching
+        self._original_handle_channel_message = bot.message_handler.handle_channel_message
         self._original_process_message = bot.message_handler.process_message
         self._original_send_channel_message = bot.command_manager.send_channel_message
         self._original_send_response = bot.command_manager.send_response
 
-        # Patch meshcore-bot
+        # Install patches
+        bot.message_handler.handle_channel_message = self._wrapped_handle_channel_message
         bot.message_handler.process_message = self._wrapped_process_message
         bot.command_manager.send_channel_message = self._coordinated_send_channel_message
         bot.command_manager.send_response = self._coordinated_send_response
 
-        logger.info("Message interceptor installed on CommandManager.send_response")
-    
+        logger.info("Firmware message interceptor installed")
+
+    # ------------------------------------------------------------------
+    # Patch 1: capture raw text before colon-split
+    # ------------------------------------------------------------------
+
+    async def _wrapped_handle_channel_message(self, event, *args, **kwargs):
+        """Capture raw payload text into raw_text_var before the message_handler
+        strips the sender prefix (e.g. "HOWL: !ping" → "!ping")."""
+        raw_text = ""
+        try:
+            payload = getattr(event, "payload", None) or {}
+            raw_text = payload.get("text", "")
+        except Exception:
+            pass
+        token = raw_text_var.set(raw_text)
+        try:
+            return await self._original_handle_channel_message(event, *args, **kwargs)
+        finally:
+            raw_text_var.reset(token)
+
+    # ------------------------------------------------------------------
+    # Patch 2: observe peer tokens, set message context
+    # ------------------------------------------------------------------
+
     async def _wrapped_process_message(self, message, *args, **kwargs):
+        """Set current_message context and observe incoming peer [xxxx] prefixes."""
+        # Observe incoming message for peer suppression token
+        if not message.is_dm:
+            self.fw.observe_peer_message(message.content or "")
+
         token = current_message_var.set(message)
         coord_token = coordinated_var.set(False)
         try:
-            # Forward incoming message to Discord webhook
             await self._discord_forward_incoming(message)
             return await self._original_process_message(message, *args, **kwargs)
         finally:
@@ -310,8 +397,9 @@ class MessageInterceptor:
             ))
 
     def restore(self):
-        """Restore the original patched methods."""
+        """Restore all patched methods."""
+        self.bot.message_handler.handle_channel_message = self._original_handle_channel_message
         self.bot.message_handler.process_message = self._original_process_message
         self.bot.command_manager.send_channel_message = self._original_send_channel_message
         self.bot.command_manager.send_response = self._original_send_response
-        logger.info("Message interceptor removed")
+        logger.info("Firmware message interceptor removed")

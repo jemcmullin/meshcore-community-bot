@@ -1,8 +1,7 @@
-"""Background task that batches and reports messages/packets to the coordinator."""
+# This module has been removed.
+# Packet reporting was part of the HTTP coordinator which is no longer used.
+raise ImportError("packet_reporter has been removed")
 
-import asyncio
-import logging
-from typing import Optional
 
 from .coordinator_client import CoordinatorClient
 

@@ -21,22 +21,9 @@ advert_interval_hours = 24
 startup_advert = flood
 auto_manage_contacts = bot
 
-[Coordinator]
-# URL of the central MeshCore Coordinator API
-# Leave empty to run in standalone mode (no coordination)
-url = https://coordinator.denvermc.com
-# Registration key (required - obtain from network admin)
-registration_key =
+[Community]
 # IATA-style mesh region code (e.g., DEN, LAX)
 mesh_region = 
-# Heartbeat interval in seconds
-heartbeat_interval = 30
-# Timeout for coordination requests in milliseconds (must accommodate 300ms bidding window)
-timeout_ms = 500
-# Batch reporting interval in seconds
-batch_interval = 5
-# Maximum batch size before forced flush
-batch_size = 50
 
 [Channels]
 monitor_channels = #bot

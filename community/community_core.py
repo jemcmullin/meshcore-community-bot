@@ -1,10 +1,8 @@
-"""Extended MeshCoreBot with coordinator integration.
+"""Extended MeshCoreBot with firmware-native coordination.
 
 Inherits from MeshCoreBot and adds:
-- Coordinator registration and heartbeat
-- Message coordination (who should respond)
-- Packet/message reporting to central service
-- Community-specific commands (coverage, botstatus)
+- Firmware-native decentralized response coordination
+- Community-specific commands (botstatus, botreps)
 """
 
 import asyncio
@@ -13,7 +11,6 @@ import importlib.util
 import inspect
 import logging
 import sys
-import time
 from pathlib import Path
 
 # Add meshcore-bot submodule to path (once, before any meshcore-bot imports)
@@ -25,90 +22,42 @@ from community.web_viewer_patch import patch_web_viewer_integration
 from modules.commands.base_command import BaseCommand
 from modules.core import MeshCoreBot
 
-from .config import CoordinatorConfig
-from .coordinator_client import CoordinatorClient
-from .response_timing import ResponseTiming
+from .config import CommunityConfig
+from .firmware_coordinator import FirmwareCoordinator
 from .message_interceptor import MessageInterceptor
-from .packet_reporter import PacketReporter
 
 logger = logging.getLogger('CommunityBot')
 
+
 class CommunityBot(MeshCoreBot):
-    """MeshCoreBot extended with multi-bot coordination."""
+    """MeshCoreBot extended with firmware-native multi-bot coordination."""
 
     def __init__(self, config_file: str = "config.ini"):
-        # Initialize the base bot
         super().__init__(config_file)
 
-        # ------------------------------------------------------------------------
-        # Visibility (logging and web)
-        # ------------------------------------------------------------------------
-
-        # Apply the same colored formatter to all community.* loggers
+        # Mirror MeshCoreBot log handlers onto the CommunityBot logger
         self._setup_community_logging()
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("CommunityBot initialized with debug logging enabled")
-            logging.getLogger("httpcore").setLevel(logging.INFO)
-            logger.debug("Set httpcore log level to INFO to reduce noise. Go to /community/community_core.py to adjust this if needed.")
 
-        # Route web viewer subprocess through community wrapper so we can
-        # add community-only pages/APIs without touching the submodule.
+        # Route web viewer subprocess through community wrapper
         patch_web_viewer_integration(self)
 
-        # ------------------------------------------------------------------------
-        # Config
-        # ------------------------------------------------------------------------
+        # Load community config (mesh_region only)
+        self.community_config = CommunityConfig.from_env_and_config(self.config)
+        logger.info("Community config loaded (mesh_region=%s)", self.community_config.mesh_region)
 
-        # Load coordinator config
-        self.coordinator_config = CoordinatorConfig.from_env_and_config(self.config)
-        logger.info('Coordinator config loaded')
-        logger.debug(
-            f"Coordinator config: url={self.coordinator_config.url}, "
-            f"heartbeat_interval={self.coordinator_config.heartbeat_interval}s, "
-            f"coordination_timeout={self.coordinator_config.coordination_timeout_ms}ms, "
-            f"batch_interval={self.coordinator_config.batch_interval_seconds}s, "
-            f"batch_max_size={self.coordinator_config.batch_max_size}, "
-            f"mesh_region={self.coordinator_config.mesh_region}"
-        )
+        # Firmware coordinator — identity seed set after radio connects
+        self.firmware_coordinator = FirmwareCoordinator()
 
-        # ------------------------------------------------------------------------
-        # Community Bot Initialization
-        # ------------------------------------------------------------------------
-
-        # Initialize coordinator client
-        self.coordinator = CoordinatorClient(
-            base_url=self.coordinator_config.url,
-            timeout_ms=self.coordinator_config.coordination_timeout_ms,
-            data_dir=str(self.bot_root / "data"),
-            registration_key=self.coordinator_config.registration_key,
-        )
-
-        # Initialize response timing
-        self.response_timing = ResponseTiming()
-
-        # Initialize packet reporter
-        self.packet_reporter = PacketReporter(
-            coordinator=self.coordinator,
-            batch_interval=self.coordinator_config.batch_interval_seconds,
-            batch_max_size=self.coordinator_config.batch_max_size,
-        )
-
-        # Install message interceptor (patches send_response)
+        # Install message interceptor (patches four methods on meshcore-bot)
         self.message_interceptor = MessageInterceptor(
             bot=self,
-            coordinator=self.coordinator,
-            timing=self.response_timing,
-            reporter=self.packet_reporter,
+            firmware_coordinator=self.firmware_coordinator,
         )
 
         # Load community-specific commands
         self._load_community_commands()
 
-        # Background tasks
-        self._coordinator_tasks: list[asyncio.Task] = []
-        self._registered_with_real_key = False
-
-        logger.info("Community bot initialized with coordinator support")
+        logger.info("Community bot initialized (firmware-native coordination)")
     
     def _setup_community_logging(self):
         """Mirror all MeshCoreBot handlers onto the CommunityBot logger.
@@ -193,139 +142,39 @@ class CommunityBot(MeshCoreBot):
                 logger.warning(f"Failed to load community command {py_file.name}: {e}")
 
     async def start(self):
-        """Start the bot with coordinator integration."""
+        """Start the community bot."""
         logger.info("Starting Community Bot...")
-
-        # Start coordinator background tasks (heartbeat will handle registration)
-        self._start_coordinator_tasks()
-
-        # Start the base bot (connects to radio, starts event loop)
-        # Registration happens in _heartbeat_loop after radio connects
         await super().start()
 
-    async def stop(self):
-        """Stop the bot and cleanup coordinator resources."""
-        # Cancel coordinator tasks
-        for task in self._coordinator_tasks:
-            task.cancel()
-        self._coordinator_tasks.clear()
+    async def connect(self):
+        """Connect to radio and seed the firmware coordinator identity."""
+        await super().connect()
+        self._seed_firmware_coordinator()
 
-        # Restore original send_response
+    def _seed_firmware_coordinator(self):
+        """Set coordinator identity seed from radio public key after connect."""
+        try:
+            info = None
+            if self.meshcore and hasattr(self.meshcore, "self_info"):
+                info = self.meshcore.self_info
+            if info:
+                if isinstance(info, dict):
+                    pk = info.get("public_key", "") or ""
+                else:
+                    pk = getattr(info, "public_key", "") or ""
+                if pk:
+                    self.firmware_coordinator.set_identity_seed(pk)
+                    return
+        except Exception as e:
+            logger.debug("Could not read public key for identity seed: %s", e)
+        logger.warning("Firmware coordinator identity seed not set (radio public key unavailable)")
+
+    async def stop(self):
+        """Stop the bot and cleanup community resources."""
         if hasattr(self, "message_interceptor"):
             self.message_interceptor.restore()
 
-        # Close coordinator client
-        if hasattr(self, "coordinator"):
-            await self.coordinator.close()
-
-        # Close Discord webhook session
         from .discord_webhook import close as discord_close
         await discord_close()
 
-        # Stop base bot
         await super().stop()
-
-    async def _register_with_coordinator(self) -> bool:
-        """Register this bot with the coordinator using the real radio public key.
-
-        Returns True if registration succeeded.
-        """
-        if not self.coordinator.is_configured:
-            return False
-
-        # Try to get the real radio public key
-        public_key = ""
-        if self.meshcore and hasattr(self.meshcore, "self_info"):
-            try:
-                info = self.meshcore.self_info
-                if info and isinstance(info, dict):
-                    public_key = info.get("public_key", "") or ""
-                elif info and hasattr(info, "public_key"):
-                    public_key = info.public_key or ""
-            except Exception:
-                pass
-
-        if not public_key:
-            # Radio not connected yet — can't register with real key
-            return False
-
-        bot_name = self.config.get("Bot", "bot_name", fallback="CommunityBot")
-        lat = self.config.getfloat("Bot", "bot_latitude", fallback=None)
-        lon = self.config.getfloat("Bot", "bot_longitude", fallback=None)
-        conn_type = self.config.get("Connection", "connection_type", fallback="serial")
-
-        # Get loaded command names
-        capabilities = list(self.command_manager.commands.keys())
-
-        success = await self.coordinator.register(
-            bot_name=bot_name,
-            public_key=public_key,
-            latitude=lat,
-            longitude=lon,
-            connection_type=conn_type,
-            capabilities=capabilities,
-            version="0.1.0",
-            mesh_region=self.coordinator_config.mesh_region,
-        )
-
-        if success:
-            self._registered_with_real_key = True
-            logger.info(
-                f"Registered with coordinator as {bot_name} "
-                f"(bot_id={self.coordinator.bot_id}, pubkey={public_key[:12]}...)"
-            )
-        return success
-
-    def _start_coordinator_tasks(self):
-        """Start background tasks for coordinator communication."""
-        if not self.coordinator.is_configured:
-            return
-
-        # Heartbeat loop (also handles registration)
-        task = asyncio.create_task(self._heartbeat_loop())
-        self._coordinator_tasks.append(task)
-
-        # Packet reporter loop
-        task = asyncio.create_task(self.packet_reporter.run())
-        self._coordinator_tasks.append(task)
-
-        logger.info("Coordinator background tasks started")
-
-    async def _heartbeat_loop(self):
-        """Send periodic heartbeats to the coordinator.
-
-        Also handles registration — waits for the radio to connect,
-        then registers with the real public key.
-        """
-        while True:
-            try:
-                # If not yet registered with real key, try each heartbeat cycle
-                if not self._registered_with_real_key:
-                    if self.connected and self.meshcore:
-                        success = await self._register_with_coordinator()
-                        if not success:
-                            logger.debug("Waiting for radio to provide public key...")
-                    # Don't send heartbeats until registered
-                    await asyncio.sleep(5)
-                    continue
-
-                uptime = int(time.time() - self.start_time)
-                contact_count = 0
-                channel_count = 0
-
-                if self.meshcore:
-                    if hasattr(self.meshcore, "contacts") and self.meshcore.contacts:
-                        contact_count = len(self.meshcore.contacts)
-
-                success = await self.coordinator.heartbeat(
-                    uptime_seconds=uptime,
-                    connected=self.connected,
-                    contact_count=contact_count,
-                    channel_count=channel_count,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.debug(f"Heartbeat error: {e}")
-
-            await asyncio.sleep(self.coordinator.heartbeat_interval)

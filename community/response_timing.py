@@ -1,8 +1,8 @@
-import asyncio
-import logging
-import random
+# This module has been removed.
+# Response timing is now handled by the firmware coordination formula
+# in community/meshcore_response_coordinator.py and community/firmware_coordinator.py.
+raise ImportError("response_timing has been removed — use firmware_coordinator instead")
 
-logger = logging.getLogger('CommunityBot')
 
 # Delay parameters — more hops means more delay so closer bots respond first
 BASE_DELAY_MS = 200   # Delay for a direct (0-hop) message

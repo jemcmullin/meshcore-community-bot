@@ -50,54 +50,47 @@ async def publish_web_viewer_dm_event(message, result, bot):
     except Exception as e:
         logger.debug(f"Failed to log DM event for web viewer: {e}")
 
-async def publish_web_viewer_coordination_event(
+async def publish_web_viewer_fw_event(
     bot,
     message,
-    message_hash: str,
     stage: str,
-    winner_name: str = "",
-    winner_score: float = 0.0,
-    reason: str = "",
     delay_ms: int = 0,
     command: str = "",
+    token_hex: str = "",
 ):
-    """
-    Publish coordination stage snapshots to web viewer command stream.
-    Uses existing BotIntegration.capture_command() so no submodule changes are required.
+    """Publish firmware coordination stage events to the web viewer command stream.
+
+    Stages: fw_pending, fw_suppressed, fw_sent
     """
     wvi = getattr(bot, "web_viewer_integration", None)
     if not wvi or not getattr(wvi, "bot_integration", None):
         return
 
-    sender_id = getattr(message, 'sender_id', None)
-
-    summary_parts = [f"stage={stage}"]
+    parts = [f"stage={stage}"]
+    sender_id = getattr(message, "sender_id", None)
     if sender_id is not None:
-        summary_parts.append(f"sender={sender_id}")
-    hops = getattr(message, 'hops', None)
+        parts.append(f"sender={sender_id}")
+    hops = getattr(message, "hops", None)
     if hops is not None:
-        summary_parts.append(f"hops={hops}")
+        parts.append(f"hops={hops}")
     if command:
-        summary_parts.append(f"command={command}")
-    if winner_name:
-        summary_parts.append(f"winner={winner_name}")
-    if winner_score:
-        summary_parts.append(f"score={winner_score:.3f}")
-    if reason:
-        summary_parts.append(f"reason={reason}")
+        parts.append(f"command={command}")
+    if token_hex:
+        parts.append(f"token={token_hex}")
     if delay_ms:
-        summary_parts.append(f"delay={delay_ms}ms")
-    summary = " ".join(summary_parts)
+        parts.append(f"delay={delay_ms}ms")
+    summary = " ".join(parts)
 
-    command_id = f"coord:{message_hash[:12]}"
+    command_id = f"fw:{token_hex or 'none'}"
     try:
         await asyncio.to_thread(
             wvi.bot_integration.capture_command,
             message,
-            f"coord_{stage}",
+            f"fw_{stage}",
             summary,
-            True,
+            stage == "fw_sent",
             command_id,
         )
     except Exception as e:
-        logger.debug(f"Failed to publish coordination event to web viewer: {e}")
+        logger.debug("Failed to publish fw event to web viewer: %s", e)
+
