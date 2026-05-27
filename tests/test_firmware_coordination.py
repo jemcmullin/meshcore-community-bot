@@ -375,7 +375,9 @@ def test_interceptor_schedules_unprefixed_response_but_sends_prefixed(monkeypatc
     assert len(harness.firmware.schedule_calls) == 1
 
     fp_input, response_text, now_ms = harness.firmware.schedule_calls[0]
-    assert fp_input["text"] == "HOWL: !ping"
+    assert fp_input["text"] == "!ping"
+    assert fp_input["sender_key_prefix"] == b"\x00" * 6
+    assert fp_input["sender_key_prefix_len"] == 0
     assert response_text == "Pong!"
     assert now_ms is not None
     assert harness.sent_payloads == [prepend_request_token_text(fp_input, "Pong!")]

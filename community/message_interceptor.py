@@ -52,23 +52,40 @@ def _channel_kind(message) -> int:
     return 3
 
 
+def _split_firmware_channel_text(raw_text: str) -> tuple[str, str] | None:
+    if not raw_text:
+        return None
+    head, sep, tail = raw_text.partition(": ")
+    if sep and head.strip():
+        return head.strip(), tail.strip()
+    return None
+
+
 def _to_fingerprint_input(message) -> dict:
     """Build the firmware fingerprint input dict from a MeshMessage."""
-    try:
-        pubkey_bytes = bytes.fromhex(message.sender_pubkey or "")
-    except (ValueError, TypeError):
-        pubkey_bytes = b""
-    key_prefix = pubkey_bytes[:6].ljust(6, b"\x00")
+    # DMs short-circuit in _coordinated_send_response and never reach coordination.
     channel_kind = _channel_kind(message)
-    raw_text = raw_text_var.get(message.content or "")
+    sender_name = message.sender_id or ""
+    text_for_fingerprint = message.content or ""
+
+    # Firmware channel token input uses zero key bytes and len=0.
+    key_prefix = b"\x00" * 6
+    key_source = "firmware_channel_zero"
+    key_prefix_len = 0
+    parsed = _split_firmware_channel_text(raw_text_var.get(""))
+    if parsed is not None:
+        sender_name, text_for_fingerprint = parsed
+
     return {
         "channel_kind": channel_kind,
         "channel_name": message.channel or "",
-        "sender_name": message.sender_id or "",
+        "sender_name": sender_name,
         "sender_key_prefix": key_prefix,
-        "sender_key_prefix_len": 6,
+        "sender_key_source": key_source,
+        "sender_key_prefix_len": key_prefix_len,
         "sender_timestamp": message.timestamp or 0,
-        "text": raw_text,
+        "text": text_for_fingerprint,
+        "text_len": len(text_for_fingerprint.encode("utf-8")),
         "path_hash_count": message.hops or 0,
     }
 
@@ -269,20 +286,24 @@ class MessageInterceptor:
         else:
             key_prefix_text = str(key_prefix)
         logger.debug(
-            "Token input: channel_kind=%s channel_name=%r sender_name=%r sender_key_prefix=%s sender_timestamp=%s text=%r path_hash_count=%s",
+            "[TOKEN] input: channel_kind=%s channel_name=%r sender_name=%r sender_key_prefix=%s sender_key_source=%s sender_timestamp=%s text=%r text_len=%s path_hash_count=%s",
             fp_input.get("channel_kind"),
             fp_input.get("channel_name"),
             fp_input.get("sender_name"),
             key_prefix_text,
+            fp_input.get("sender_key_source", ""),
             fp_input.get("sender_timestamp"),
             fp_input.get("text"),
+            fp_input.get("text_len"),
             fp_input.get("path_hash_count"),
+            extra={"log_color": "HIGHLIGHT"},
         )
         logger.debug(
-            "Token output: token=[%s] token_u16=0x%04x message_output=%r",
+            "[TOKEN] output: token=[%s] token_u16=0x%04x message_output=%r",
             token_hex,
             req_token_16,
             tokenised,
+            extra={"log_color": "HIGHLIGHT"},
         )
 
         self._purge_stale_token_outcomes()

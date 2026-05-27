@@ -29,8 +29,7 @@ from .meshcore_response_coordinator import (
     suppress_by_request_token,
 )
 
-logger = logging.getLogger(__name__)
-
+logger = logging.getLogger('CommunityBot')
 
 def _now_ms() -> int:
     return int(time.monotonic() * 1000)
@@ -73,9 +72,10 @@ class FirmwareCoordinator:
         if parsed is None:
             return False
         token, _ = parsed
+        logger.debug("[TOKEN] observed peer token prefix: [%04x]", token, extra={"log_color": "HIGHLIGHT"})
         suppressed = suppress_by_request_token(self.pending, token)
         if suppressed:
-            logger.debug("Peer token [%04x] suppressed %d pending response(s)", token, sum(1 for e in self.pending if e.suppressed))
+            logger.debug("[TOKEN] Peer token [%04x] suppressed %d pending response(s)", token, sum(1 for e in self.pending if e.suppressed), extra={"log_color": "HIGHLIGHT"})
         return suppressed
 
     def schedule_response(
@@ -128,11 +128,12 @@ class FirmwareCoordinator:
         )
         self.pending.append(entry)
         logger.debug(
-            "Scheduled response in %dms: token=[%04x] resp_fp=0x%016x queue=%d",
+            "[TOKEN] Scheduled response in %dms: token=[%04x] resp_fp=0x%016x queue=%d",
             delay_ms,
             req_fp & 0xFFFF,
             resp_fp,
             queue_depth,
+            extra={"log_color": "HIGHLIGHT"},
         )
         return entry, delay_ms
 
@@ -142,7 +143,7 @@ class FirmwareCoordinator:
             now_ms = _now_ms()
         entry.sent = True
         record_recent(self.recent, entry.response_fingerprint, now_ms)
-        logger.debug("Marked sent: resp_fp=0x%016x", entry.response_fingerprint)
+        logger.debug("Marked sent: resp_fp=0x%016x", entry.response_fingerprint, extra={"log_color": "HIGHLIGHT"})
 
     def queue_depth(self) -> int:
         """Return number of active pending entries."""

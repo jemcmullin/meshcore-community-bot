@@ -14,6 +14,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping, Union
+import logging
+
+logger = logging.getLogger('CommunityBot')
 
 FNV64_OFFSET = 1469598103934665603
 FNV64_PRIME = 1099511628211
@@ -168,6 +171,35 @@ def request_fingerprint_for_message(message: MessageInput) -> int:
     text_len = int(_read_field(message, "text_len", len(_as_bytes(text_value))))
     normalized_text = _normalize_text(text_value, text_len)
     hash_value = _fnv1a_update_bytes(hash_value, normalized_text.lower())
+    #---
+    # For troubleshooting, log the processed inputs that are actually hashed
+    proc_channel = _bounded_c_string(_read_field(message, "channel_name", b""), BOT_MAX_CHANNEL_NAME_LEN + 1)
+    if proc_channel.startswith(b"#"):
+        proc_channel = proc_channel[1:]
+    proc_channel_lower = proc_channel.lower()
+
+    # sender_key_prefix was already padded/truncated above to exactly 6 bytes
+    sender_key_prefix_padded = sender_key_prefix
+
+    # sender_name as a bounded C-string (what the firmware hashes, lowercase in hash)
+    sender_name_proc = _bounded_c_string(_read_field(message, "sender_name", b""), BOT_MAX_SENDER_NAME_LEN + 1)
+
+    # normalized_text is what we hashed (then lowercased)
+    normalized_text_bytes = normalized_text
+
+    logger.debug(
+        "[TOKEN] hash compute: fp=0x%016x channel_kind=%d channel_name_proc=%r sender_name_proc=%r sender_key_prefix_padded=%r sender_timestamp=%d normalized_text=%r normalized_text_lower=%r",
+        hash_value,
+        int(_read_field(message, "channel_kind", 0)),
+        proc_channel,
+        sender_name_proc,
+        sender_key_prefix_padded,
+        int(_read_field(message, "sender_timestamp", 0)),
+        normalized_text_bytes,
+        normalized_text_bytes.lower(),
+        extra={"log_color": "HIGHLIGHT"},
+    )
+    #---
     return hash_value
 
 

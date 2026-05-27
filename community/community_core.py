@@ -95,6 +95,7 @@ class CommunityBot(MeshCoreBot):
                     "WARNING": "yellow",
                     "ERROR": "red",
                     "CRITICAL": "red,bg_white",
+                    "HIGHLIGHT": "magenta",
                 },
             )
             handler = logging.StreamHandler()
