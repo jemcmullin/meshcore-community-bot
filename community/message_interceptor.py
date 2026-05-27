@@ -101,6 +101,17 @@ class MessageInterceptor:
         self.bot = bot
         self.fw = firmware_coordinator
 
+        self._debug_no_send = False
+        community_cfg = getattr(bot, "community_config", None)
+        if community_cfg is not None:
+            self._debug_no_send = bool(getattr(community_cfg, "coordination_debug_no_send", False))
+        elif getattr(bot, "config", None) and bot.config.has_section("Community"):
+            self._debug_no_send = bot.config.getboolean(
+                "Community",
+                "coordination_debug_no_send",
+                fallback=False,
+            )
+
         # Discord webhook config
         self._discord_bot_webhook = bot.config.get("Discord", "bot_webhook_url", fallback="")
         self._discord_emergency_webhook = bot.config.get("Discord", "emergency_webhook_url", fallback="")
@@ -124,6 +135,8 @@ class MessageInterceptor:
         bot.command_manager.send_response = self._coordinated_send_response
 
         logger.info("Firmware message interceptor installed")
+        if self._debug_no_send:
+            logger.warning("Community debug mode enabled: responses will be coordinated but not transmitted")
 
     # ------------------------------------------------------------------
     # Patch 1: capture raw text before colon-split
@@ -167,6 +180,13 @@ class MessageInterceptor:
         """Coordinate keyword-triggered channel messages (no inbound MeshMessage in signature)."""
         if coordinated_var.get():
             # Already coordinated by _coordinated_send_response for this message — just send.
+            if self._debug_no_send:
+                logger.debug(
+                    "DEBUG_NO_SEND: coordinated channel continuation skipped (channel=%s payload=%r)",
+                    channel,
+                    content,
+                )
+                return True
             return await self._original_send_channel_message(channel, content, *args, **kwargs)
 
         try:
@@ -174,9 +194,23 @@ class MessageInterceptor:
         except LookupError:
             # No inbound context (e.g. scheduled broadcast) — send immediately.
             logger.debug("send_channel_message: no current_message context, sending immediately")
+            if self._debug_no_send:
+                logger.debug(
+                    "DEBUG_NO_SEND: skipped non-context channel send (channel=%s payload=%r)",
+                    channel,
+                    content,
+                )
+                return True
             return await self._original_send_channel_message(channel, content, *args, **kwargs)
 
         if message.is_dm:
+            if self._debug_no_send:
+                logger.debug(
+                    "DEBUG_NO_SEND: skipped DM channel send (channel=%s payload=%r)",
+                    channel,
+                    content,
+                )
+                return True
             return await self._original_send_channel_message(channel, content, *args, **kwargs)
 
         fp_input = _to_fingerprint_input(message)
@@ -187,6 +221,9 @@ class MessageInterceptor:
         """Coordinate command responses via firmware timing protocol."""
         # DMs bypass coordination — only this bot received the DM.
         if message.is_dm:
+            if self._debug_no_send:
+                logger.debug("DEBUG_NO_SEND: skipped DM response (sender=%s payload=%r)", message.sender_id, content)
+                return True
             result = await self._original_send_response(message, content, *args, **kwargs)
             await self._discord_forward_response(message, content)
             return result
@@ -226,6 +263,28 @@ class MessageInterceptor:
         tokenised = prepend_request_token_text(fp_input, content)
         req_token_16 = request_token_for_message(fp_input) & 0xFFFF
 
+        key_prefix = fp_input.get("sender_key_prefix", b"")
+        if isinstance(key_prefix, (bytes, bytearray)):
+            key_prefix_text = bytes(key_prefix).hex()
+        else:
+            key_prefix_text = str(key_prefix)
+        logger.debug(
+            "Token input: channel_kind=%s channel_name=%r sender_name=%r sender_key_prefix=%s sender_timestamp=%s text=%r path_hash_count=%s",
+            fp_input.get("channel_kind"),
+            fp_input.get("channel_name"),
+            fp_input.get("sender_name"),
+            key_prefix_text,
+            fp_input.get("sender_timestamp"),
+            fp_input.get("text"),
+            fp_input.get("path_hash_count"),
+        )
+        logger.debug(
+            "Token output: token=[%s] token_u16=0x%04x message_output=%r",
+            token_hex,
+            req_token_16,
+            tokenised,
+        )
+
         self._purge_stale_token_outcomes()
 
         prior = self._token_outcomes.get(req_token_16)
@@ -248,8 +307,9 @@ class MessageInterceptor:
                     "Chunk sent without re-coordination (token=[%s] already won)",
                     token_hex,
                 )
-                sent = await send_fn(tokenised)
-                await self._discord_forward_response(message, tokenised)
+                sent = await self._send_or_debug(tokenised, send_fn, message, token_hex, command, 0)
+                if sent:
+                    await self._discord_forward_response(message, tokenised)
                 asyncio.create_task(publish_web_viewer_fw_event(
                     self.bot, message, "fw_sent", delay_ms=0, command=command, token_hex=token_hex,
                 ))
@@ -286,7 +346,7 @@ class MessageInterceptor:
             ))
             return False
 
-        sent = await send_fn(tokenised)
+        sent = await self._send_or_debug(tokenised, send_fn, message, token_hex, command, delay_ms)
         if sent:
             self._token_outcomes[req_token_16] = ("won", time.monotonic())
             now_ms2 = int(time.time() * 1000) & 0xFFFFFFFF
@@ -299,6 +359,19 @@ class MessageInterceptor:
         else:
             logger.warning("Response send failed after coordination (token=[%s] command=%s)", token_hex, command)
         return sent
+
+    async def _send_or_debug(self, payload: str, send_fn, message, token_hex: str, command: str, delay_ms: int) -> bool:
+        if self._debug_no_send:
+            logger.debug(
+                "DEBUG_NO_SEND: send skipped (token=[%s] command=%s delay=%dms channel=%s payload=%r)",
+                token_hex,
+                command,
+                delay_ms,
+                getattr(message, "channel", ""),
+                payload,
+            )
+            return True
+        return await send_fn(payload)
 
     def _get_discord_webhook_for_channel(self, channel: str) -> str:
         """Return the Discord webhook URL for a given channel, or empty string."""
@@ -332,6 +405,9 @@ class MessageInterceptor:
     async def _discord_forward_response(self, message, content: str):
         """Forward a bot response to Discord."""
         if message.is_dm:
+            return
+        if self._debug_no_send:
+            logger.debug("DEBUG_NO_SEND: skipped Discord forward for response payload=%r", content)
             return
         webhook_url = self._get_discord_webhook_for_channel(message.channel)
         if webhook_url:

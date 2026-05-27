@@ -298,14 +298,16 @@ def _build_message(raw_text: str):
     )
 
 
-def _build_interceptor_harness(monkeypatch, *, send_results=None):
+def _build_interceptor_harness(monkeypatch, *, send_results=None, debug_no_send=False):
     import community.message_interceptor as message_interceptor_module
     import community.firmware_coordinator as firmware_coordinator_module
 
     config = ConfigParser()
     config.add_section("Discord")
     config.add_section("Bot")
+    config.add_section("Community")
     config.set("Bot", "bot_name", "TestBot")
+    config.set("Community", "coordination_debug_no_send", "true" if debug_no_send else "false")
 
     sent_payloads: list[str] = []
     channel_payloads: list[tuple[str, str]] = []
@@ -436,5 +438,18 @@ def test_interceptor_send_failure_does_not_mark_sent_or_cache_win(monkeypatch):
     assert len(harness.firmware.schedule_calls) == 2
     if harness.firmware.mark_calls:
         assert harness.firmware.mark_calls[0][0].sent is True
+
+
+def test_interceptor_debug_no_send_skips_transmit_but_marks_sent(monkeypatch):
+    harness = _build_interceptor_harness(monkeypatch, debug_no_send=True)
+    event = SimpleNamespace(payload={"text": "HOWL: !ping"})
+
+    result = asyncio.run(harness.bot.message_handler.handle_channel_message(event))
+
+    assert result is True
+    assert len(harness.firmware.schedule_calls) == 1
+    assert harness.sent_payloads == []
+    assert len(harness.firmware.mark_calls) == 1
+    assert harness.firmware.mark_calls[0][0].sent is True
 
 

@@ -24,6 +24,8 @@ auto_manage_contacts = bot
 [Community]
 # IATA-style mesh region code (e.g., DEN, LAX)
 mesh_region = 
+# When true, run firmware coordination and token generation but do not transmit responses.
+coordination_debug_no_send = false
 
 [Channels]
 monitor_channels = #bot

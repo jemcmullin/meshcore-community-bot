@@ -41,9 +41,13 @@ class CommunityBot(MeshCoreBot):
         # Route web viewer subprocess through community wrapper
         patch_web_viewer_integration(self)
 
-        # Load community config (mesh_region only)
+        # Load community config
         self.community_config = CommunityConfig.from_env_and_config(self.config)
-        logger.info("Community config loaded (mesh_region=%s)", self.community_config.mesh_region)
+        logger.info(
+            "Community config loaded (mesh_region=%s coordination_debug_no_send=%s)",
+            self.community_config.mesh_region,
+            self.community_config.coordination_debug_no_send,
+        )
 
         # Firmware coordinator — identity seed set after radio connects
         self.firmware_coordinator = FirmwareCoordinator()
