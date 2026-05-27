@@ -1,50 +1,43 @@
 # MeshCore Community Bot
 
-A multi-bot-aware MeshCore mesh radio bot with coordinated response priority. Built on top of [meshcore-bot](https://github.com/agessaman/meshcore-bot), adding central coordinator integration so multiple bots on the same mesh don't all respond to the same message.
+A firmware-native multi-bot MeshCore radio bot built on top of [meshcore-bot](https://github.com/agessaman/meshcore-bot). It keeps the upstream bot as an upgradeable git submodule and adds a community layer that prevents duplicate channel replies without requiring any central coordinator service.
 
 ## How It Works
 
-The community bot wraps the existing meshcore-bot and all its commands (weather, satellite passes, solar, etc.). When a channel message arrives, the bot forwards its raw signal data (SNR, RSSI, hops, path) to a central coordinator. The coordinator evaluates all competing bids and assigns one bot to respond. If the coordinator is unreachable, bots fall back to a hop-count-based delay so a likely closer bot responds first.
+The community bot wraps the existing meshcore-bot and all its commands. When a channel message arrives, each bot independently computes the same request fingerprint from the inbound packet, derives a 16-bit response token, and waits a deterministic firmware-compatible delay. If a bot hears another peer reply first with the same `[xxxx]` token, it suppresses its own pending response.
 
 ```
-Your Radio ──► Community Bot ──► Coordinator API
-                    │                   │
-                    ▼                   ▼
-              All existing        Who should
-              commands work       respond?
+Your Radio ──► Community Bot ──► Deterministic local delay
+        │                       │
+        ▼                       ▼
+      All existing            Peer-heard token
+      commands work           suppression
 ```
 
-**DMs always work immediately** - coordination only applies to channel messages where multiple bots might see the same request.
+DMs bypass coordination entirely and respond immediately.
 
-## How the Coordinator Decides Which Bot Responds
+## Firmware-Native Coordination
 
-When a message is heard by multiple bots at the same time, only one is chosen as primary to respond — otherwise the network gets flooded with duplicate responses.
+Channel coordination now works like this:
 
-Here's the coordinator's decision process:
+1. A channel message is received.
+2. The bot computes a firmware-compatible FNV-1a request fingerprint from the raw inbound packet text and metadata.
+3. The low 16 bits become the request token shown in channel replies as `[xxxx]`.
+4. The bot computes a total delay using the firmware timing formula: base delay, channel bias, hop bias, queue bias, tie-break bias, and jitter.
+5. While waiting, the bot observes incoming channel traffic. If another bot replies first with the same token prefix, the pending reply is suppressed.
+6. If the wait completes without suppression, the bot prepends `[xxxx] ` to the response text and sends it.
 
-1. **All bots that hear the message check in** with the coordinator within a short window (300 ms). Each bot reports what it heard: signal strength, number of hops the message took, and which repeaters it passed through.
-
-2. **The coordinator scores each bot** based on three things:
-   - **Route quality (50%)** — Did the message travel through well-established, widely-used repeaters? A node that many different mesh members route through regularly is trusted infrastructure. A personal node used by only one person scores lower.
-   - **Signal strength (25%)** — Was the final link to this bot clean? A good signal implies a higher chance of a reliable connection on the return path. Alternatively, a weak signal is a higher risk of the reply getting lost, so it scores lower. Signal score is bracketed and only penalized on the low end to avoid penalizing bots with less but still usable signal.
-   - **Hop count (25%)** — Fewer hops = fewer risks on the reply.
-
-3. **The highest-scoring bot is told to respond.** All others are told to stay silent. The winner is the bot most likely to successfully get a reply _back_ to the original sender.
-
-4. **Optionally, one or more extra bots may also respond** after a short delay (1–1.5 seconds). This is a configurable on the coordinator: this mainly for additional response diversity and is partially a backup mechanism. It also gives quieter bots occasional turns, which helps the coordinator learn more about the network over time.
-
-> **Why route quality dominates:** Signal only tells about the last hop _to_ the bot. It's a small part of whether the reply can make it _back_ to the sender. A message that arrived through an observed, heavily-used repeater is structurally more reliable for the return trip — even if the signal was less (but still usable) than other bots.
+This design is fully decentralized. No HTTP coordinator, registration key, heartbeat, or external scoring service is required.
 
 ## Features
 
 Everything from [meshcore-bot](https://github.com/agessaman/meshcore-bot) as an unmodified upgradeable submodule, plus:
 
-- **Multi-Bot Coordination** - Only one bot responds per channel message; the coordinator picks the best bot based on signal data from all competing bots
-- **Automatic Fallback** - Works standalone if coordinator is unreachable; hop-based delay ensures the closest bot responds first
-- **Network Reporting** - Messages and packets are reported to the coordinator in batches for network-wide analytics
+- **Firmware-Native Multi-Bot Coordination** - Channel replies use deterministic local delays and token-based suppression instead of a central coordinator
+- **Firmware-Compatible Fingerprinting** - Request tokens and response timing are computed from raw inbound packet text and firmware-matched message fingerprints
 - **Discord Integration** - Incoming and outgoing mesh messages forwarded to Discord webhooks
-- **New Commands** - `botstatus` (coordinator connection and network info) and `bot_top_repeaters` (top infrastructure relays seen by this bot, DM only)
-- **Web Viewer Community Dashboard** - Real-time visualization of coordination decisions and packet stream
+- **New Commands** - `botstatus` (firmware coordination state) and `botreps` (top infrastructure relays seen by this bot, DM only)
+- **Web Viewer Community Dashboard** - Real-time visualization of firmware coordination events and packet stream data
 
 ## Requirements
 
@@ -86,10 +79,6 @@ MESHCORE_BOT_NAME=MyBot
 MESHCORE_LATITUDE=39.7392
 MESHCORE_LONGITUDE=-104.9903
 MESH_REGION=DEN
-
-# Coordinator (provided by network admin)
-COORDINATOR_URL=https://coordinator.denvermc.com
-COORDINATOR_REGISTRATION_KEY=your-key-here
 ```
 
 ### 3. Configure the bot
@@ -121,8 +110,7 @@ You should see:
 
 ```
 [INFO] Starting MeshCore Community Bot...
-[INFO] Registered with coordinator as MyBot (uuid-here)
-[INFO] Coordinator background tasks started
+[INFO] Community bot initialized (firmware-native coordination)
 [INFO] Bot is running. Press Ctrl+C to stop.
 ```
 
@@ -132,23 +120,21 @@ You should see:
 
 Set these in your `.env` file:
 
-| Variable                        | Required        | Description                          |
-| ------------------------------- | --------------- | ------------------------------------ |
-| `MESHCORE_CONNECTION_TYPE`      | Yes             | `serial`, `ble`, or `tcp`            |
-| `MESHCORE_SERIAL_PORT`          | For serial      | Device path (e.g., `/dev/ttyUSB0`)   |
-| `MESHCORE_TCP_HOST`             | For TCP         | Radio IP address                     |
-| `MESHCORE_BOT_NAME`             | Yes             | Your bot's display name              |
-| `MESHCORE_LATITUDE`             | Recommended     | Your location (for scoring)          |
-| `MESHCORE_LONGITUDE`            | Recommended     | Your location (for scoring)          |
-| `COORDINATOR_URL`               | Recommended     | Coordinator API URL                  |
-| `COORDINATOR_REGISTRATION_KEY`  | For coordinator | Registration key from network admin  |
-| `MESH_REGION`                   | Optional        | Region code (e.g., `DEN`)            |
-| `WEB_VIEWER_PORT`               | Optional        | Web viewer port (default: `8081`)    |
-| `DISCORD_BOT_WEBHOOK_URL`       | Optional        | Discord webhook for #bot messages    |
-| `DISCORD_EMERGENCY_WEBHOOK_URL` | Optional        | Discord webhook for #emergency       |
-| `TZ`                            | Optional        | Timezone (default: `America/Denver`) |
-| `N2YO_API_KEY`                  | Optional        | For satellite pass command           |
-| `AIRNOW_API_KEY`                | Optional        | For air quality command              |
+| Variable                        | Required    | Description                          |
+| ------------------------------- | ----------- | ------------------------------------ |
+| `MESHCORE_CONNECTION_TYPE`      | Yes         | `serial`, `ble`, or `tcp`            |
+| `MESHCORE_SERIAL_PORT`          | For serial  | Device path (e.g., `/dev/ttyUSB0`)   |
+| `MESHCORE_TCP_HOST`             | For TCP     | Radio IP address                     |
+| `MESHCORE_BOT_NAME`             | Yes         | Your bot's display name              |
+| `MESHCORE_LATITUDE`             | Recommended | Your location                        |
+| `MESHCORE_LONGITUDE`            | Recommended | Your location                        |
+| `MESH_REGION`                   | Optional    | Region code (e.g., `DEN`)            |
+| `WEB_VIEWER_PORT`               | Optional    | Web viewer port (default: `8081`)    |
+| `DISCORD_BOT_WEBHOOK_URL`       | Optional    | Discord webhook for #bot messages    |
+| `DISCORD_EMERGENCY_WEBHOOK_URL` | Optional    | Discord webhook for #emergency       |
+| `TZ`                            | Optional    | Timezone (default: `America/Denver`) |
+| `N2YO_API_KEY`                  | Optional    | For satellite pass command           |
+| `AIRNOW_API_KEY`                | Optional    | For air quality command              |
 
 ### Config File
 
@@ -158,21 +144,21 @@ Key settings:
 
 - `[Channels] monitor_channels` - Which channels to monitor (default: `#bot`)
 - `[Channels] respond_to_dms` - Whether to respond to DMs (default: `true`)
-- `[Coordinator]` section - Coordinator-specific settings (usually set via env vars)
+- `[Community] mesh_region` - Optional region code for deployment naming and metadata
 
-## Standalone Mode
+## Operating Mode
 
-If `COORDINATOR_URL` is empty or the coordinator is unreachable, the bot runs standalone - just like a regular meshcore-bot. All commands work normally, there's just no multi-bot coordination.
+The bot always runs in firmware-native coordination mode. There is no coordinator dependency and no degraded standalone fallback mode to configure. If multiple community bots hear the same channel request, they resolve the race locally using deterministic delay plus peer-heard token suppression.
 
 ## Commands
 
 All commands from meshcore-bot are available, plus:
 
-| Command             | Description                                                             |
-| ------------------- | ----------------------------------------------------------------------- |
-| `botstatus`         | Coordinator connection status, active bot count, uptime                 |
-| `bot_top_repeaters` | Top infrastructure relays seen by this bot, ranked by fan-in (DM only)  |
-| `test`              | Custom `test`/`t` response format with optional phrase and path metrics |
+| Command     | Description                                                             |
+| ----------- | ----------------------------------------------------------------------- |
+| `botstatus` | Firmware coordination status, pending count, recent count, uptime       |
+| `botreps`   | Top infrastructure relays seen by this bot, ranked by fan-in (DM only)  |
+| `test`      | Custom `test`/`t` response format with optional phrase and path metrics |
 
 Additional `Keywords.test` placeholders: `direct_signal` (direct/0-hop SNR+RSSI only) and `path_hash_size` (path byte length; direct empty unless explicit metadata, unknown `?`).
 
@@ -228,7 +214,7 @@ This pulls the latest community code, updates the submodule to `dev`, and rebuil
 
 Silent failure risks on `dev`:
 
-- Coordinator interception can stop working if upstream changes patched method names/signatures (`send_response`, `send_channel_message`, `process_message`).
+- Firmware coordination interception can stop working if upstream changes patched method names/signatures (`handle_channel_message`, `process_message`, `send_response`, `send_channel_message`).
 - Community dashboard stats can silently degrade if upstream DB schema changes affect `mesh_connections` or `complete_contact_tracking`.
 
 To switch back to `main`, run `make redeploy` — it resets the submodule to `main` as part of the normal update flow.
@@ -283,8 +269,6 @@ docker run -d \
   -e MESHCORE_LATITUDE=39.7392 \
   -e MESHCORE_LONGITUDE=-104.9903 \
   -e MESH_REGION=DEN \
-  -e COORDINATOR_URL=https://coordinator.denvermc.com \
-  -e COORDINATOR_REGISTRATION_KEY=your-key-here \
   -e WEB_VIEWER_PORT=8081 \
   -e TZ=America/Denver \
   --restart unless-stopped \
@@ -318,11 +302,11 @@ python3 community_bot.py
 - Use `ls /dev/by-id/` as an alternative stable device path
 - Make sure Docker has device access (check `docker-compose.yml` devices section)
 
-**Coordinator registration failed:**
+**Firmware identity seed not set:**
 
-- Ensure `COORDINATOR_REGISTRATION_KEY` is set (obtain from network admin)
-- Check `COORDINATOR_URL` is correct
-- Bot still works in standalone mode - it will retry on next heartbeat
+- The bot derives its local tie-break seed from the radio public key after connect
+- Check radio connectivity and `self_info` availability in logs
+- Coordination still works with seed `0`, but tie-break behavior is less distinctive across bots until the radio identity is available
 
 **Commands not responding:**
 

@@ -1,6 +1,6 @@
 # Community Bot Setup Guide
 
-This guide walks you through connecting your MeshCore radio to the Denver MeshCore bot network.
+This guide walks you through connecting your MeshCore radio to the community bot using the current firmware-native coordination design.
 
 ## What You Need
 
@@ -57,9 +57,6 @@ MESHCORE_LONGITUDE=-104.9903
 # Region - your mesh region code
 MESH_REGION=DEN
 
-# Coordinator - connects you to the network
-COORDINATOR_URL=https://coordinator.denvermc.com
-
 # Timezone
 TZ=America/Denver
 ```
@@ -107,7 +104,7 @@ You should see:
 
 ```
 [INFO] Starting MeshCore Community Bot...
-[INFO] Registered with coordinator as YourBotName
+[INFO] Community bot initialized (firmware-native coordination)
 [INFO] Bot is running.
 ```
 
@@ -115,11 +112,13 @@ You should see:
 
 Send a DM to your bot from another MeshCore device with `ping` - you should get `Pong!` back.
 
-Check your bot is visible on the network:
+For a channel-level coordination check, send `ping` or `test` on `#bot` from a mesh radio. The reply should be prefixed with a 4-hex token, for example:
 
-```bash
-curl https://coordinator.denvermc.com/api/v1/bots
 ```
+[1a2b] Pong!
+```
+
+To inspect local coordination state, DM the bot with `botstatus`.
 
 ## Optional: Discord Webhooks
 
@@ -153,39 +152,17 @@ cd meshcore-community-bot
 make redeploy
 ```
 
-## Checking Your Coverage Score
-
-- On V1 API, use any MeshCore device, DM your bot with `coverage` to see your score, or `botstatus` for full network info.
-- On V2 API, use any MeshCore device, DM your bot with `scoring` to see a detailed breakdown of your primary surrounding repeater infrastructure (the highest weighted item)
-
 ## How Coordination Works
 
 When multiple bots are on the same mesh:
 
 1. A user sends a command on the `#bot` channel
-2. All bots see it and ask the coordinator "should I respond?"
-3. The coordinator picks the bot with the highest coverage score
-4. Only that bot responds - no duplicate messages
+2. All bots that hear it compute the same request fingerprint and request token locally
+3. Each bot computes a firmware-compatible delay from channel type, hops, queue depth, bot identity seed, and jitter
+4. The first bot to respond transmits a token-prefixed message like `[1a2b] Pong!`
+5. Any other bot still waiting suppresses itself if it hears that same token first
 
-If the coordinator is unreachable, bots use a delay system - higher-scored bots respond faster.
-
-**Your coverage score** is based on:
-
-**Delivery scoring** as a weighted blend of four components:
-
-- Infrastructure quality (connectedness along inbound path): **40%**
-- Hop count (shorter paths preferred): **35%**
-- Exact path familiarity bonus: **15%**
-- Path freshness (recency of sender observation): **10%**
-
-Details:
-
-- Infrastructure is based on how many nodes your radio can hear, SNR/RSSI for direct, or harmonic mean of connectedness for relayed paths.
-- Hop score rewards shorter paths: $\text{hop\_score} = 1 / (1 + \text{hops})$
-- Path bonus is 1.0 if your bot has seen the exact sender+path before, else 0.0.
-- Freshness decays with time since last sender observation: $\exp(-\text{age\_hours} / 24)$
-
-The more you run your bot and the better your radio placement, the higher your delivery score and the more likely your bot is to win coordination bids.
+There is no coordinator service and no registration step. All coordination happens locally on each bot.
 
 ## Troubleshooting
 
@@ -201,11 +178,11 @@ The more you run your bot and the better your radio placement, the higher your d
 - Try unplugging and replugging the USB cable
 - Check the serial port isn't being used by another program
 
-### "Coordinator registration failed"
+### "Firmware coordinator identity seed not set"
 
-- This is OK - your bot still works in standalone mode
-- Check that `COORDINATOR_URL` is correct
-- The bot will retry automatically on the next heartbeat
+- The bot derives a tie-break seed from the radio public key after connect
+- Check radio connectivity and log output for `self_info`
+- Coordination still works with seed `0`, but tie-break behavior is less distinctive until the radio identity is available
 
 ### Bot isn't responding to messages
 
@@ -215,4 +192,4 @@ The more you run your bot and the better your radio placement, the higher your d
 
 ## Getting Help
 
-Reach out on the Denver MeshCore Discord or open an issue on GitHub.
+Reach out on the Colorado Mesh Discord or open an issue on GitHub.

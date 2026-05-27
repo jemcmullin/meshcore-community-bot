@@ -1,5 +1,9 @@
 # Firmware-Native Coordination Migration Plan
 
+Status: this migration is now the active design in the community layer. This
+document is retained as the design and implementation reference for the current
+firmware-native coordination model.
+
 Replace the HTTP coordinator (`coordinator_client.py`) with fully decentralised,
 firmware-compatible response coordination. Each bot independently computes a
 deterministic delay from the inbound message fingerprint, waits, and suppresses
