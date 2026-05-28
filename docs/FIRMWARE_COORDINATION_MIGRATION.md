@@ -52,10 +52,13 @@ BOT_HOP_BIAS_MAX_MILLIS            = 50000
 QUEUE_DELAY_PER_ENTRY_MILLIS       = 150
 
 # Channel kind enum (firmware values — must match exactly)
-BOT_CHANNEL_DM      = 0   # bias   0 ms
-BOT_CHANNEL_BOT     = 1   # bias 200 ms
-BOT_CHANNEL_TESTING = 2   # bias 400 ms
-# any other channel    3  # bias 800 ms
+class BotChannelKind(IntEnum):
+    BOT_CHANNEL_DM = 0
+    BOT_CHANNEL_PUBLIC = 1
+    BOT_CHANNEL_BOT = 2
+    BOT_CHANNEL_TESTING = 3
+    BOT_CHANNEL_EMERGENCY = 4
+    BOT_CHANNEL_OTHER = 5
 
 # Total delay formula:
 # base + channel_bias + hop_bias + queue_bias + tie_break_bias + jitter

@@ -18,13 +18,10 @@ from typing import Any, Mapping, MutableSequence, Sequence, Union
 from meshcore_request_token import (
     parse_request_token_prefix,
     request_token_for_message,
+    BotChannelKind,
 )
 
 MessageInput = Union[Mapping[str, Any], Any]
-
-BOT_CHANNEL_DM = 0
-BOT_CHANNEL_BOT = 1
-BOT_CHANNEL_TESTING = 2
 
 BOT_RESPONSE_DELAY_BASE_MILLIS = 1500
 BOT_RESPONSE_DELAY_JITTER_MILLIS = 2200
@@ -46,17 +43,17 @@ def _u32(value: int) -> int:
 
 
 def channel_delay_bias(channel_kind: int) -> int:
-    if channel_kind == BOT_CHANNEL_DM:
+    if channel_kind == BotChannelKind.BOT_CHANNEL_DM:
         return 0
-    if channel_kind == BOT_CHANNEL_BOT:
+    if channel_kind == BotChannelKind.BOT_CHANNEL_BOT:
         return 200
-    if channel_kind == BOT_CHANNEL_TESTING:
+    if channel_kind == BotChannelKind.BOT_CHANNEL_TESTING:
         return 400
     return 800
 
 
 def hop_delay_bias(channel_kind: int, path_hash_count: int, hop_step_millis: int = BOT_HOP_STEP_MILLIS_DEFAULT) -> int:
-    if channel_kind == BOT_CHANNEL_DM:
+    if channel_kind == BotChannelKind.BOT_CHANNEL_DM:
         return 0
     hop = max(0, int(path_hash_count))
     bias = hop * int(hop_step_millis) + hop * hop * BOT_HOP_GROW_MILLIS
@@ -88,7 +85,7 @@ def response_delay_millis(
     jitter_millis: int = BOT_RESPONSE_DELAY_JITTER_MILLIS,
     hop_step_millis: int = BOT_HOP_STEP_MILLIS_DEFAULT,
 ) -> int:
-    channel_kind = int(_read_field(message, "channel_kind", BOT_CHANNEL_DM))
+    channel_kind = int(_read_field(message, "channel_kind", BotChannelKind.BOT_CHANNEL_DM))
     path_hash_count = int(_read_field(message, "path_hash_count", 0))
     jitter = int(jitter_seed) % int(jitter_millis) if jitter_millis else 0
     return (

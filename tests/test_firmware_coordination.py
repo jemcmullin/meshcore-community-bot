@@ -19,6 +19,7 @@ from community.firmware_coordinator import FirmwareCoordinator
 from community.message_interceptor import MessageInterceptor, raw_text_var
 from community.meshcore_request_token import (
     BotMessage,
+    BotChannelKind,
     format_request_token,
     prepend_request_token,
     prepend_request_token_text,
@@ -27,9 +28,6 @@ from community.meshcore_request_token import (
     response_fingerprint_for_message,
 )
 from community.meshcore_response_coordinator import (
-    BOT_CHANNEL_BOT,
-    BOT_CHANNEL_DM,
-    BOT_CHANNEL_TESTING,
     BOT_HOP_BIAS_MAX_MILLIS,
     BOT_HOP_GROW_MILLIS,
     BOT_HOP_STEP_MILLIS_DEFAULT,
@@ -71,7 +69,7 @@ class _Msg:
 
 
 _DICT_MSG = {
-    "channel_kind": 1,
+    "channel_kind": 2,
     "channel_name": "#bot",
     "sender_name": "Alice",
     "sender_key_prefix": b"\x01\x02\x03\x04\x05\x06",
@@ -96,25 +94,25 @@ _OBJ_MSG = BotMessage(
 # ---------------------------------------------------------------------------
 
 def test_dict_request_fingerprint():
-    assert request_fingerprint_for_message(_DICT_MSG) == 0x6714C4F4C3006617
+    assert request_fingerprint_for_message(_DICT_MSG) == 0x01e648c3797f718a
 
 
 def test_dict_request_token():
-    assert request_token_for_message(_DICT_MSG) == 0x6617
+    assert request_token_for_message(_DICT_MSG) == 0x718a
 
 
 def test_dict_format_token():
-    assert format_request_token(request_token_for_message(_DICT_MSG)) == "6617"
+    assert format_request_token(request_token_for_message(_DICT_MSG)) == "718a"
 
 
 def test_dict_prepend_token_text():
-    assert prepend_request_token_text(_DICT_MSG, "Trace sent") == "[6617] Trace sent"
+    assert prepend_request_token_text(_DICT_MSG, "Trace sent") == "[718a] Trace sent"
 
 
 def test_dict_response_fingerprint():
     assert (
         response_fingerprint_for_message(_DICT_MSG, "Trace sent", dm_channel_kind=0)
-        == 0xC6D333E42C1FD502
+        == 0x53B534DAD1DEEF4D
     )
 
 
@@ -157,9 +155,6 @@ def test_constants():
     assert BOT_HOP_GROW_MILLIS == 400
     assert BOT_HOP_BIAS_MAX_MILLIS == 50000
     assert BOT_HOP_STEP_MILLIS_DEFAULT == 2000
-    assert BOT_CHANNEL_DM == 0
-    assert BOT_CHANNEL_BOT == 1
-    assert BOT_CHANNEL_TESTING == 2
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +162,7 @@ def test_constants():
 # ---------------------------------------------------------------------------
 
 _TIMING_MSG = _Msg(
-    channel_kind=BOT_CHANNEL_BOT,
+    channel_kind=BotChannelKind.BOT_CHANNEL_BOT,
     channel_name="#bot",
     sender_name="Alice",
     sender_key_prefix=b"\x01\x02\x03\x04\x05\x06",
@@ -180,11 +175,11 @@ _TIMING_FP = request_fingerprint_for_message(_TIMING_MSG)
 
 
 def test_channel_delay_bias():
-    assert channel_delay_bias(BOT_CHANNEL_BOT) == 200
+    assert channel_delay_bias(BotChannelKind.BOT_CHANNEL_BOT) == 200
 
 
 def test_hop_delay_bias():
-    assert hop_delay_bias(BOT_CHANNEL_BOT, 3) == 9600
+    assert hop_delay_bias(BotChannelKind.BOT_CHANNEL_BOT, 3) == 9600
 
 
 def test_queue_delay_bias():
@@ -192,15 +187,15 @@ def test_queue_delay_bias():
 
 
 def test_tie_break_bias():
-    assert tie_break_bias(_TIMING_FP, 0x12345678) == 530
+    assert tie_break_bias(_TIMING_FP, 0x12345678) == 319
 
 
 def test_response_delay_millis():
-    assert response_delay_millis(_TIMING_MSG, _TIMING_FP, 0x12345678, 4, 9876) == 13506
+    assert response_delay_millis(_TIMING_MSG, _TIMING_FP, 0x12345678, 4, 9876) == 13295
 
 
 def test_response_due_at():
-    assert response_due_at(1000, _TIMING_MSG, _TIMING_FP, 0x12345678, 4, 9876) == 14506
+    assert response_due_at(1000, _TIMING_MSG, _TIMING_FP, 0x12345678, 4, 9876) == 14295
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +203,7 @@ def test_response_due_at():
 # ---------------------------------------------------------------------------
 
 _PEER_MSG = {
-    "channel_kind": BOT_CHANNEL_BOT,
+    "channel_kind": BotChannelKind.BOT_CHANNEL_BOT,
     "channel_name": "#bot",
     "sender_name": "Alice",
     "sender_key_prefix": b"\x01\x02\x03\x04\x05\x06",

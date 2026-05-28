@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping, Union
+from enum import IntEnum
 
 FNV64_OFFSET = 1469598103934665603
 FNV64_PRIME = 1099511628211
@@ -29,6 +30,13 @@ REQUEST_TOKEN_PREFIX_LEN = 7
 BytesLike = Union[bytes, bytearray, memoryview]
 MessageInput = Union[Mapping[str, Any], Any]
 
+class BotChannelKind(IntEnum):
+    BOT_CHANNEL_DM = 0
+    BOT_CHANNEL_PUBLIC = 1
+    BOT_CHANNEL_BOT = 2
+    BOT_CHANNEL_TESTING = 3
+    BOT_CHANNEL_EMERGENCY = 4
+    BOT_CHANNEL_OTHER = 5
 
 @dataclass(frozen=True)
 class BotMessage:

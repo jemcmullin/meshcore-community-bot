@@ -24,6 +24,7 @@ from .meshcore_request_token import (
     format_request_token,
     prepend_request_token_text,
     request_token_for_message,
+    BotChannelKind,
 )
 from .web_viewer_packet_stream import publish_web_viewer_fw_event
 
@@ -43,13 +44,16 @@ raw_text_var: contextvars.ContextVar[str] = contextvars.ContextVar("raw_text", d
 def _channel_kind(message) -> int:
     """Map MeshMessage channel to firmware channel_kind integer."""
     if message.is_dm:
-        return 0
+        return BotChannelKind.BOT_CHANNEL_DM
     ch = message.channel or ""
     if ch == "#bot":
-        return 1
+        return BotChannelKind.BOT_CHANNEL_BOT
     if ch == "#testing":
-        return 2
-    return 3
+        return BotChannelKind.BOT_CHANNEL_TESTING
+    if ch == "#emergency":
+        return BotChannelKind.BOT_CHANNEL_EMERGENCY
+    # Default to public channel kind for normal channels
+    return BotChannelKind.BOT_CHANNEL_PUBLIC
 
 
 def _split_firmware_channel_text(raw_text: str) -> tuple[str, str] | None:
