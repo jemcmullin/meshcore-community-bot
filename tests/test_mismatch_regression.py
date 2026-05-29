@@ -49,6 +49,20 @@ CASES = [
         0x1cd097bc7dcbe62f,
         0xe62f,
     ),
+    (
+        {
+            "channel_kind": 2,
+            "channel_name": "#bot",
+            "sender_name": "🏃Runr 01",
+            "sender_key_prefix": b"",
+            "sender_key_prefix_len": 0,
+            "sender_timestamp": 1780006349,
+            "text": "T",
+            "text_len": 1,
+        },
+        None,  # firmware provided only the token (low 16 bits), not full 64-bit fp
+        0x1a8b,
+    ),
 ]
 
 
@@ -56,5 +70,7 @@ CASES = [
 def test_regression_real_tokens(msg, expected_fp, expected_token):
     fp = request_fingerprint_for_message(msg)
     token = request_token_for_message(msg)
-    assert fp == expected_fp, f"fingerprint mismatch: got 0x{fp:016x} expected 0x{expected_fp:016x}"
+    if expected_fp is not None:
+        assert fp == expected_fp, f"fingerprint mismatch: got 0x{fp:016x} expected 0x{expected_fp:016x}"
+    # always assert token matches firmware (token is authoritative when fp absent)
     assert token == expected_token, f"token mismatch: got 0x{token:04x} expected 0x{expected_token:04x}"

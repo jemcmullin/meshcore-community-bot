@@ -43,6 +43,9 @@ class FirmwareCoordinator:
         self.pending: list[PendingBotResponse] = []
         self.recent: list[RecentBotResponse] = []
         self._start_time_ms: int = _now_ms()
+        # Observed peer tokens: list of tuples (token:int, observed_at_ms:int)
+        # Used for diagnostics to compare which peer tokens were heard nearby in time.
+        self.observed_peer_tokens: list[tuple[int, int]] = []
 
     def set_identity_seed(self, public_key_hex: str) -> None:
         """Derive bot identity seed from public key (first 4 bytes, big-endian uint32)."""
@@ -72,11 +75,38 @@ class FirmwareCoordinator:
         if parsed is None:
             return False
         token, _ = parsed
+        now = _now_ms()
+        # Record observed token for diagnostics (keep bounded history)
+        try:
+            self.observed_peer_tokens.append((token, now))
+            # Keep recent window of ~60s to avoid unbounded growth
+            cutoff = now - 60000
+            self.observed_peer_tokens = [t for t in self.observed_peer_tokens if t[1] >= cutoff]
+        except Exception:
+            pass
         logger.debug("[TOKEN] observed peer token prefix: [%04x]", token, extra={"log_color": "HIGHLIGHT"})
         suppressed = suppress_by_request_token(self.pending, token)
         if suppressed:
             logger.debug("[TOKEN] Peer token [%04x] suppressed %d pending response(s)", token, sum(1 for e in self.pending if e.suppressed), extra={"log_color": "HIGHLIGHT"})
         return suppressed
+
+    def get_observed_peer_tokens(self, window_ms: int = 20000) -> list[int]:
+        """Return peer tokens observed within the last `window_ms` milliseconds.
+
+        Returns a list of unique token ints (low 16 bits) observed in that window,
+        ordered newest-first.
+        """
+        now = _now_ms()
+        cutoff = now - int(window_ms)
+        tokens = [t for t, ts in self.observed_peer_tokens if ts >= cutoff]
+        # Deduplicate preserving order (newest first)
+        seen = set()
+        out = []
+        for token in reversed(tokens):
+            if token not in seen:
+                seen.add(token)
+                out.append(token)
+        return list(reversed(out))
 
     def schedule_response(
         self,

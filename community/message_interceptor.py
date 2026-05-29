@@ -17,6 +17,8 @@ import contextvars
 import logging
 import time
 from typing import Optional
+import os
+import json
 
 from .discord_webhook import send_to_discord
 from .firmware_coordinator import FirmwareCoordinator
@@ -24,6 +26,7 @@ from .meshcore_request_token import (
     format_request_token,
     prepend_request_token_text,
     request_token_for_message,
+    request_fingerprint_for_message,
     BotChannelKind,
 )
 from .web_viewer_packet_stream import publish_web_viewer_fw_event
@@ -80,6 +83,20 @@ def _to_fingerprint_input(message) -> dict:
     if parsed is not None:
         sender_name, text_for_fingerprint = parsed
 
+    # Prefer raw payload bytes when available on the MeshMessage. This ensures
+    # the exact on-wire bytes are fed into the firmware-compatible hashing
+    # routine (avoids decoding/utf-8 re-encoding mismatches).
+    text_value = text_for_fingerprint
+    text_len = len(text_for_fingerprint.encode("utf-8"))
+    try:
+        # message.payload_bytes is attached by MessageHandler when RF data is present
+        raw_bytes = getattr(message, "payload_bytes", None)
+        if raw_bytes:
+            text_value = raw_bytes
+            text_len = len(raw_bytes)
+    except Exception:
+        pass
+
     return {
         "channel_kind": channel_kind,
         "channel_name": message.channel or "",
@@ -88,8 +105,8 @@ def _to_fingerprint_input(message) -> dict:
         "sender_key_source": key_source,
         "sender_key_prefix_len": key_prefix_len,
         "sender_timestamp": message.timestamp or 0,
-        "text": text_for_fingerprint,
-        "text_len": len(text_for_fingerprint.encode("utf-8")),
+        "text": text_value,
+        "text_len": text_len,
         "path_hash_count": message.hops or 0,
     }
 
@@ -309,6 +326,63 @@ class MessageInterceptor:
             tokenised,
             extra={"log_color": "HIGHLIGHT"},
         )
+
+        # Diagnostic logging: capture raw payload bytes (if available), computed
+        # fingerprint/token, recent observed peer tokens in the last 20s, and a
+        # snapshot of pending tokens. This aids comparison against firmware
+        # observations when debugging mismatches.
+        try:
+            computed_fp = None
+            try:
+                computed_fp = request_fingerprint_for_message(fp_input)
+            except Exception:
+                computed_fp = None
+
+            raw_hex = getattr(message, "payload_hex", None) if message else None
+            raw_len = len(raw_hex) // 2 if raw_hex else None
+
+            observed_tokens = []
+            try:
+                observed_tokens = [f"{t:04x}" for t in self.fw.get_observed_peer_tokens(20000)]
+            except Exception:
+                observed_tokens = []
+
+            pending_tokens = []
+            try:
+                for e in list(self.fw.pending):
+                    if getattr(e, "request_fingerprint", None):
+                        pending_tokens.append(f"{(e.request_fingerprint & 0xFFFF):04x}")
+            except Exception:
+                pending_tokens = []
+
+            logger.debug(
+                "[TOKEN] raw_hex_prefix=%s raw_len=%s computed_fp=%s token=%s observed_peers=%s pending_tokens=%s",
+                (raw_hex[:64] + "...") if raw_hex else None,
+                raw_len,
+                (f"0x{computed_fp:016x}" if computed_fp is not None else None),
+                token_hex,
+                observed_tokens,
+                pending_tokens,
+                extra={"log_color": "HIGHLIGHT"},
+            )
+            # Also append a JSON line to a diagnostics file for easier capture.
+            try:
+                diag_path = os.environ.get("FW_DIAG_LOG", "/tmp/mesh_fw_diag.log")
+                entry = {
+                    "ts_ms": int(time.time() * 1000),
+                    "raw_hex_prefix": (raw_hex[:128] + "...") if raw_hex else None,
+                    "raw_len": raw_len,
+                    "computed_fp": (f"0x{computed_fp:016x}" if computed_fp is not None else None),
+                    "token": token_hex,
+                    "observed_peers": observed_tokens,
+                    "pending_tokens": pending_tokens,
+                }
+                with open(diag_path, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+        except Exception:
+            pass
 
         self._purge_stale_token_outcomes()
 

@@ -89,3 +89,33 @@ hash compute: fp=0xa467519857cce57e channel_kind=1 channel_name_proc=b'bot' send
 ```
 input: channel_kind=1 channel_name='#bot' sender_name='Nix Mobile 3' sender_key_prefix=000000000000 sender_key_source=firmware_channel_zero sender_timestamp=1780000516 text='T' text_len=1 path_hash_count=5
 ```
+
+## 4
+
+### Request
+
+```
+RF data with routing info: {'timestamp': 1780006350.0899172, 'packet_prefix': '31d51540ca37894c5d63ac823e9b730b', 'pubkey_prefix': None, 'snr': 12.25, 'rssi': -43, 'raw_hex': '31d51540ca37894c5d63ac823e9b730b41a896a37562284b2b1b4a2d948318d95b07a992058049', 'payload': '1540ca37894c5d63ac823e9b730b41a896a37562284b2b1b4a2d948318d95b07a992058049', 'payload_length': 37, 'routing_info': {'path_length': 0, 'path_len_byte': 64, 'path_byte_length': 0, 'bytes_per_hop': 2, 'path_hex': '', 'path_nodes': [], 'route_type': 'FLOOD', 'payload_length': 37, 'payload_type': 'GRP_TXT', 'packet_hash': '71A739C97AE12429'}, 'packet_hash': '71A739C97AE12429', 'route_type_int': 1, 'transport_code1': None, 'payload_type_int': 5, 'scope_payload_hex': 'ca37894c5d63ac823e9b730b41a896a37562284b2b1b4a2d948318d95b07a992058049'}
+```
+
+```
+Channel message payload: {'type': 'CHAN', 'SNR': 12.25, 'channel_idx': 1, 'path_hash_mode': 1, 'path_len': 0, 'txt_type': 0, 'sender_timestamp': 1780006349, 'text': '🏃Runr 01: T'}
+```
+
+### Firmware Hash
+
+[1a8b]
+
+### Python Hash
+
+[52b3]
+
+#### Python Debug Output
+
+```
+hash compute: fp=0xc6c769fe922352b3 channel_kind=2 channel_name_proc=b'bot' sender_name_proc=b'\xf0\x9f\x8f\x83Runr 01' sender_key_prefix_padded=b'\x00\x00\x00\x00\x00\x00' sender_timestamp=1780006349 normalized_text=b'T' normalized_text_lower=b't'
+```
+
+```
+input: channel_kind=2 channel_name='#bot' sender_name='🏃Runr 01' sender_key_prefix=000000000000 sender_key_source=firmware_channel_zero sender_timestamp=1780006349 text='T' text_len=1 path_hash_count=0
+```
