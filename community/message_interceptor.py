@@ -19,6 +19,7 @@ import time
 from typing import Optional
 import os
 import json
+from pathlib import Path
 
 from .discord_webhook import send_to_discord
 from .firmware_coordinator import FirmwareCoordinator
@@ -367,7 +368,19 @@ class MessageInterceptor:
             )
             # Also append a JSON line to a diagnostics file for easier capture.
             try:
-                diag_path = os.environ.get("FW_DIAG_LOG", "/tmp/mesh_fw_diag.log")
+                # Use env override if provided, otherwise place diagnostics in the
+                # repository `logs/` directory so it sits alongside other bot logs.
+                diag_path = os.environ.get("FW_DIAG_LOG")
+                if not diag_path:
+                    repo_root = Path(__file__).resolve().parents[1]
+                    logs_dir = repo_root / "logs"
+                    try:
+                        logs_dir.mkdir(parents=True, exist_ok=True)
+                    except Exception:
+                        # If we cannot create the repo logs dir, fall back to /tmp
+                        diag_path = "/tmp/mesh_fw_diag.log"
+                    else:
+                        diag_path = str(logs_dir / "mesh_fw_diag.log")
                 entry = {
                     "ts_ms": int(time.time() * 1000),
                     "raw_hex_prefix": (raw_hex[:128] + "...") if raw_hex else None,
@@ -380,9 +393,9 @@ class MessageInterceptor:
                 with open(diag_path, "a", encoding="utf-8") as fh:
                     fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
             except Exception:
-                pass
+                logger.debug("Failed to write firmware diagnostic log", exc_info=True)
         except Exception:
-            pass
+            logger.debug("Failed to log firmware coordination diagnostics", exc_info=True)
 
         self._purge_stale_token_outcomes()
 
