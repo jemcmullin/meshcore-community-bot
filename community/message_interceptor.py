@@ -300,6 +300,23 @@ class MessageInterceptor:
         command = _first_word(message.content if message else None)
         token_hex = _token_hex(fp_input)
         tokenised = prepend_request_token_text(fp_input, content)
+
+        # If the inbound channel message is an '@' mention addressing this bot
+        # (e.g. "@BotName do something"), do not prefix our response with
+        # the firmware token; still coordinate timing/suppression but send the
+        # unprefixed content so replies look natural for addressed messages.
+        should_prefix = True
+        should_send_immediately = False
+        try:
+            bot_name = getattr(self, "_bot_name", "") or ""
+            first_word = (message.content or "").lstrip().split()[0] if getattr(message, "content", None) else ""
+            if first_word.startswith("@") and first_word[1:].strip(':,').lower() == bot_name.strip().lower():
+                should_prefix = False
+                # If addressed directly, attempt to send immediately without waiting.
+                should_send_immediately = True
+        except Exception:
+            should_prefix = True
+            should_send_immediately = False
         req_token_16 = request_token_for_message(fp_input) & 0xFFFF
 
         key_prefix = fp_input.get("sender_key_prefix", b"")
@@ -399,6 +416,18 @@ class MessageInterceptor:
 
         self._purge_stale_token_outcomes()
 
+        # If this was an addressed @mention to this bot, send immediately
+        # (unprefixed) and skip the normal firmware scheduling/suppression.
+        if should_send_immediately:
+            payload = content
+            sent = await self._send_or_debug(payload, send_fn, message, token_hex, command, 0)
+            if sent:
+                await self._discord_forward_response(message, payload)
+            asyncio.create_task(publish_web_viewer_fw_event(
+                self.bot, message, "fw_sent", delay_ms=0, command=command, token_hex=token_hex,
+            ))
+            return sent
+
         prior = self._token_outcomes.get(req_token_16)
         if prior is not None:
             outcome, _ = prior
@@ -419,9 +448,10 @@ class MessageInterceptor:
                     "Chunk sent without re-coordination (token=[%s] already won)",
                     token_hex,
                 )
-                sent = await self._send_or_debug(tokenised, send_fn, message, token_hex, command, 0)
+                payload = tokenised if should_prefix else content
+                sent = await self._send_or_debug(payload, send_fn, message, token_hex, command, 0)
                 if sent:
-                    await self._discord_forward_response(message, tokenised)
+                    await self._discord_forward_response(message, payload)
                 asyncio.create_task(publish_web_viewer_fw_event(
                     self.bot, message, "fw_sent", delay_ms=0, command=command, token_hex=token_hex,
                 ))
@@ -458,12 +488,13 @@ class MessageInterceptor:
             ))
             return False
 
-        sent = await self._send_or_debug(tokenised, send_fn, message, token_hex, command, delay_ms)
+        payload = tokenised if should_prefix else content
+        sent = await self._send_or_debug(payload, send_fn, message, token_hex, command, delay_ms)
         if sent:
             self._token_outcomes[req_token_16] = ("won", time.monotonic())
             now_ms2 = int(time.time() * 1000) & 0xFFFFFFFF
             self.fw.mark_sent(entry, now_ms2)
-            await self._discord_forward_response(message, tokenised)
+            await self._discord_forward_response(message, payload)
             asyncio.create_task(publish_web_viewer_fw_event(
                 self.bot, message, "fw_sent", delay_ms=delay_ms, command=command, token_hex=token_hex,
             ))
