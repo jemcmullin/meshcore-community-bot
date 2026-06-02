@@ -310,13 +310,13 @@ class MessageInterceptor:
         """
         command = _first_word(message.content if message else None)
         token_hex = _token_hex(fp_input)
-        tokenised = prepend_request_token_text(fp_input, content)
+        tokenised = None
 
         # If the inbound channel message is an '@' mention addressing this bot
         # (e.g. "@BotName do something"), do not prefix our response with
         # the firmware token; still coordinate timing/suppression but send the
         # unprefixed content so replies look natural for addressed messages.
-        should_prefix = True
+        should_prefix = True if not self.fw.coordination_mode_queue else False
         should_send_immediately = False
         try:
             bot_name = getattr(self, "_bot_name", "") or ""
@@ -459,7 +459,7 @@ class MessageInterceptor:
                     "Chunk sent without re-coordination (token=[%s] already won)",
                     token_hex,
                 )
-                payload = tokenised if should_prefix else content
+                payload = (prepend_request_token_text(fp_input, content) if should_prefix else content)
                 sent = await self._send_or_debug(payload, send_fn, message, token_hex, command, 0)
                 if sent:
                     await self._discord_forward_response(message, payload)
@@ -499,7 +499,7 @@ class MessageInterceptor:
             ))
             return False
 
-        payload = tokenised if should_prefix else content
+        payload = (prepend_request_token_text(fp_input, content) if should_prefix else content)
         sent = await self._send_or_debug(payload, send_fn, message, token_hex, command, delay_ms)
         if sent:
             self._token_outcomes[req_token_16] = ("won", time.monotonic())
