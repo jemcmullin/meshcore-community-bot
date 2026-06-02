@@ -10,15 +10,22 @@ class CommunityConfig:
 
     mesh_region: str = ""
     coordination_debug_no_send: bool = False
+    coordination_mode_queue: bool = False
 
     @classmethod
     def from_env_and_config(cls, config) -> "CommunityConfig":
         """Load community config from environment variables and config.ini."""
         config_debug_no_send = False
+        config_mode_queue = False
         if config.has_section("Community"):
             config_debug_no_send = config.getboolean(
                 "Community",
                 "coordination_debug_no_send",
+                fallback=False,
+            )
+            config_mode_queue = config.getboolean(
+                "Community",
+                "coordination_mode_queue",
                 fallback=False,
             )
 
@@ -30,6 +37,10 @@ class CommunityConfig:
             coordination_debug_no_send=_env_bool(
                 "COMMUNITY_COORDINATION_DEBUG_NO_SEND",
                 config_debug_no_send,
+            ),
+            coordination_mode_queue=_env_bool(
+                "COMMUNITY_COORDINATION_MODE_QUEUE",
+                config_mode_queue,
             ),
         )
 

@@ -26,6 +26,8 @@ auto_manage_contacts = bot
 mesh_region = 
 # When true, run firmware coordination and token generation but do not transmit responses.
 coordination_debug_no_send = false
+# queue (simplified just to timing, conservatively yield)
+coordination_mode_queue = true
 
 [Channels]
 monitor_channels = #bot

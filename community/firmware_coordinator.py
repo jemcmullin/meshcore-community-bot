@@ -46,6 +46,7 @@ class FirmwareCoordinator:
         # Observed peer tokens: list of tuples (token:int, observed_at_ms:int)
         # Used for diagnostics to compare which peer tokens were heard nearby in time.
         self.observed_peer_tokens: list[tuple[int, int]] = []
+        self.coordination_mode_queue: bool = False  # If True, suppress all responses when any pending (conservative fallback mode)
 
     def set_identity_seed(self, public_key_hex: str) -> None:
         """Derive bot identity seed from public key (first 4 bytes, big-endian uint32)."""
@@ -85,6 +86,12 @@ class FirmwareCoordinator:
         except Exception:
             pass
         logger.debug("[TOKEN] observed peer token prefix: [%04x]", token, extra={"log_color": "HIGHLIGHT"})
+        if self.coordination_mode_queue:
+            # clear queue as conservative coordination without proper token matching
+            for entry in self.pending:
+                entry.suppressed = True
+            logger.info("Responses suppressed by observed peer message (queue mode)")
+            return True
         suppressed = suppress_by_request_token(self.pending, token)
         if suppressed:
             logger.debug("[TOKEN] Peer token [%04x] suppressed %d pending response(s)", token, sum(1 for e in self.pending if e.suppressed), extra={"log_color": "HIGHLIGHT"})

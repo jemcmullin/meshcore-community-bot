@@ -144,12 +144,23 @@ class MessageInterceptor:
         community_cfg = getattr(bot, "community_config", None)
         if community_cfg is not None:
             self._debug_no_send = bool(getattr(community_cfg, "coordination_debug_no_send", False))
+            # Propagate queue-mode flag from CommunityConfig to firmware coordinator
+            try:
+                self.fw.coordination_mode_queue = bool(getattr(community_cfg, "coordination_mode_queue", False))
+            except Exception:
+                pass
         elif getattr(bot, "config", None) and bot.config.has_section("Community"):
             self._debug_no_send = bot.config.getboolean(
                 "Community",
                 "coordination_debug_no_send",
                 fallback=False,
             )
+            try:
+                self.fw.coordination_mode_queue = bot.config.getboolean(
+                    "Community", "coordination_mode_queue", fallback=False
+                )
+            except Exception:
+                pass
 
         # Discord webhook config
         self._discord_bot_webhook = bot.config.get("Discord", "bot_webhook_url", fallback="")
