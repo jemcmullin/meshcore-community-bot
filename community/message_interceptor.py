@@ -478,6 +478,9 @@ class MessageInterceptor:
             return False
 
         entry, delay_ms = result
+        if self.fw.coordination_mode_queue:
+            #add a second
+            delay_ms += 1000
         logger.debug(
             "Firmware coordination: sleeping %dms before responding (token=[%s] command=%s)",
             delay_ms, token_hex, command,
