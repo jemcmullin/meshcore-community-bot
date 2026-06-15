@@ -72,30 +72,63 @@ class FirmwareCoordinator:
 
         Returns True if any pending entries were suppressed.
         """
-        parsed = parse_request_token_prefix(text)
-        if parsed is None:
-            return False
-        token, _ = parsed
-        now = _now_ms()
-        # Record observed token for diagnostics (keep bounded history)
-        try:
-            self.observed_peer_tokens.append((token, now))
-            # Keep recent window of ~60s to avoid unbounded growth
-            cutoff = now - 60000
-            self.observed_peer_tokens = [t for t in self.observed_peer_tokens if t[1] >= cutoff]
-        except Exception:
-            pass
-        logger.debug("[TOKEN] observed peer token prefix: [%04x]", token, extra={"log_color": "HIGHLIGHT"})
+        # --- OLD CODE ---
+        # parsed = parse_request_token_prefix(text)
+        # if parsed is None:
+        #     return False
+        # token, _ = parsed
+        # now = _now_ms()
+        # # Record observed token for diagnostics (keep bounded history)
+        # try:
+        #     self.observed_peer_tokens.append((token, now))
+        #     # Keep recent window of ~60s to avoid unbounded growth
+        #     cutoff = now - 60000
+        #     self.observed_peer_tokens = [t for t in self.observed_peer_tokens if t[1] >= cutoff]
+        # except Exception:
+        #     pass
+        # logger.debug("[TOKEN] observed peer token prefix: [%04x]", token, extra={"log_color": "HIGHLIGHT"})
+        # if self.coordination_mode_queue:
+        #     # clear queue as conservative coordination without proper token matching
+        #     for entry in self.pending:
+        #         entry.suppressed = True
+        #     logger.info("Responses suppressed by observed peer message (queue mode)")
+        #     return True
+        # suppressed = suppress_by_request_token(self.pending, token)
+        # if suppressed:
+        #     logger.debug("[TOKEN] Peer token [%04x] suppressed %d pending response(s)", token, sum(1 for e in self.pending if e.suppressed), extra={"log_color": "HIGHLIGHT"})
+        # return suppressed
+        # --- END OLD CODE ---
+        queue_suppressed = False
         if self.coordination_mode_queue:
             # clear queue as conservative coordination without proper token matching
             for entry in self.pending:
+                if not entry.suppressed:
+                    queue_suppressed = True
                 entry.suppressed = True
-            logger.info("Responses suppressed by observed peer message (queue mode)")
-            return True
-        suppressed = suppress_by_request_token(self.pending, token)
-        if suppressed:
-            logger.debug("[TOKEN] Peer token [%04x] suppressed %d pending response(s)", token, sum(1 for e in self.pending if e.suppressed), extra={"log_color": "HIGHLIGHT"})
-        return suppressed
+            if queue_suppressed:
+                logger.info("Responses suppressed by traffic observed on channel (queue mode)")
+
+        # Refactor to remove extra ifs, not a clean structure but avoids unnecessary token parsing
+        parsed = parse_request_token_prefix(text)
+        if parsed is not None:
+            token, _ = parsed
+            logger.debug("[TOKEN] observed peer token prefix: [%04x]", token, extra={"log_color": "HIGHLIGHT"})
+        
+            now = _now_ms()
+            # Record observed token for diagnostics (keep bounded history)
+            try:
+                self.observed_peer_tokens.append((token, now))
+                # Keep recent window of ~60s to avoid unbounded growth
+                cutoff = now - 60000
+                self.observed_peer_tokens = [t for t in self.observed_peer_tokens if t[1] >= cutoff]
+            except Exception:
+                pass
+            if not self.coordination_mode_queue:
+                suppressed = suppress_by_request_token(self.pending, token)
+                if suppressed:
+                    logger.debug("[TOKEN] Peer token [%04x] suppressed %d pending response(s)", token, sum(1 for e in self.pending if e.suppressed), extra={"log_color": "HIGHLIGHT"})
+                return suppressed
+        return queue_suppressed
 
     def get_observed_peer_tokens(self, window_ms: int = 20000) -> list[int]:
         """Return peer tokens observed within the last `window_ms` milliseconds.
