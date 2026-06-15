@@ -44,7 +44,6 @@ coordinated_var: contextvars.ContextVar = contextvars.ContextVar("coordinated", 
 # Context var: raw payload text e.g. "HOWL: !ping" captured before colon-split
 raw_text_var: contextvars.ContextVar[str] = contextvars.ContextVar("raw_text", default="")
 
-
 def _channel_kind(message) -> int:
     """Map MeshMessage channel to firmware channel_kind integer."""
     if message.is_dm:
@@ -135,6 +134,7 @@ class MessageInterceptor:
     # How long to remember the won/suppressed outcome for a token so that
     # subsequent chunks of the same multi-part response are treated consistently.
     _TOKEN_OUTCOME_TTL = 120.0  # seconds
+    _ADD_DELAY_MS_QUEUE_MODE = 0 #1000  # Additional delay to add in queue mode to improve suppression reliability (empirically determined, not from firmware source)
 
     def __init__(self, bot, firmware_coordinator: FirmwareCoordinator):
         self.bot = bot
@@ -480,7 +480,7 @@ class MessageInterceptor:
         entry, delay_ms = result
         if self.fw.coordination_mode_queue:
             #add a second
-            delay_ms += 1000
+            delay_ms += self._ADD_DELAY_MS_QUEUE_MODE
         logger.debug(
             "Firmware coordination: sleeping %dms before responding (token=[%s] command=%s)",
             delay_ms, token_hex, command,
