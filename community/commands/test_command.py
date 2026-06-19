@@ -144,8 +144,35 @@ class TestCommand(BaseCommand):
         if self.bot.config.has_section('Keywords'):
             format_str = self.bot.config.get('Keywords', 'test', fallback=None)
             if format_str:
-                return self._strip_quotes_from_config(format_str)
+                # Strip surrounding quotes like the base behavior
+                s = self._strip_quotes_from_config(format_str)
+                # Convert literal escape sequences (e.g. "\n", "\t") into real characters
+                try:
+                    s = s.encode('utf-8').decode('unicode_escape')
+                except Exception:
+                    s = s.replace('\\n', '\n').replace('\\t', '\t')
+                return s
         return self.DEFAULT_FORMAT
+
+    def get_path_display_string(self, message: MeshMessage) -> str:
+        """Override to return only comma-separated node prefixes (no '(N hops)') for TestCommand."""
+        routing_info = getattr(message, 'routing_info', None)
+        if routing_info is not None:
+            path_length = routing_info.get('path_length', 0)
+            if path_length == 0:
+                return "Direct"
+            path_nodes = routing_info.get('path_nodes', [])
+            if path_nodes:
+                path_str = ','.join(str(n).lower() for n in path_nodes)
+                return path_str
+        if not message.path:
+            return "Unknown"
+        path_string = message.path
+        if " via ROUTE_TYPE_" in path_string:
+            path_string = path_string.split(" via ROUTE_TYPE_")[0]
+        # Strip trailing " (N hops)" if present
+        path_string = re.sub(r'\s*\(\d+\s+hops\)\s*$', '', path_string.strip())
+        return path_string or "Unknown"
 
     def _extract_path_node_ids(self, message: MeshMessage) -> list[str]:
         """Extract path node IDs from message. Prefers routing_info.path_nodes (multi-byte); else parses message.path.
@@ -780,7 +807,13 @@ class TestCommand(BaseCommand):
                     hops_val = len(routing_info['path_nodes'])
             else:
                 hops_val = None
-            hops_str = str(hops_val) if hops_val is not None else "?"
+            # `{hops}`: blank when zero, '?' when unknown, else the numeric value
+            if hops_val == 0:
+                hops_str = ""
+            elif hops_val is None:
+                hops_str = "?"
+            else:
+                hops_str = str(hops_val)
             if hops_val is None:
                 hops_label = "?"
             elif hops_val == 0:
