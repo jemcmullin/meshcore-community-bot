@@ -96,6 +96,34 @@ class WxMetarCommand(BaseCommand):
             return m.group(1)
         return f"MESH{int(abs(lat * 100) % 1000):03d}"
 
+    @staticmethod
+    def _round_wind_dir_degrees(degrees: float) -> int:
+        normalized = 360.0 if float(degrees) == 360.0 else float(degrees) % 360.0
+        rounded = int(math.floor((normalized + 2.5) / 5.0) * 5)
+        if rounded == 0 and normalized >= 357.5:
+            return 360
+        return min(rounded, 360)
+
+    @classmethod
+    def _parse_wind_dir_degrees(cls, value) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            return cls._round_wind_dir_degrees(float(value))
+        except Exception:
+            pass
+        s = str(value).strip().upper()
+        dirs = {
+            'N': 360.0, 'NNE': 22.5, 'NE': 45.0, 'ENE': 67.5,
+            'E': 90.0, 'ESE': 112.5, 'SE': 135.0, 'SSE': 157.5,
+            'S': 180.0, 'SSW': 202.5, 'SW': 225.0, 'WSW': 247.5,
+            'W': 270.0, 'WNW': 292.5, 'NW': 315.0, 'NNW': 337.5,
+        }
+        for token in s.replace('-', ' ').split():
+            if token in dirs:
+                return cls._round_wind_dir_degrees(dirs[token])
+        return None
+
     async def execute(self, message: MeshMessage) -> bool:
         content = message.content.strip()
         parts = content.split()
@@ -220,27 +248,8 @@ class WxMetarCommand(BaseCommand):
             except Exception:
                 return 0
 
-        def parse_wind_dir_degrees(value) -> Optional[int]:
-            if value is None:
-                return None
-            try:
-                return int(round(float(value))) % 360
-            except Exception:
-                pass
-            s = str(value).strip().upper()
-            dirs = {
-                'N': 0, 'NNE': 22, 'NE': 45, 'ENE': 67,
-                'E': 90, 'ESE': 112, 'SE': 135, 'SSE': 157,
-                'S': 180, 'SSW': 202, 'SW': 225, 'WSW': 247,
-                'W': 270, 'WNW': 292, 'NW': 315, 'NNW': 337,
-            }
-            for token in s.replace('-', ' ').split():
-                if token in dirs:
-                    return dirs[token]
-            return None
-
         wind_kts = parse_speed_to_kts(wind_speed_raw)
-        wind_dir_int = parse_wind_dir_degrees(wind_dir)
+        wind_dir_int = self._parse_wind_dir_degrees(wind_dir)
 
         # METAR wind format: DDDSSKT or VRBSSKT; include gusts if present.
         gust_raw = (
