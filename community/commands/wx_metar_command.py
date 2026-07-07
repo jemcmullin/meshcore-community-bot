@@ -249,32 +249,78 @@ class WxMetarCommand(BaseCommand):
                     gust_kts = gust
                 wind_field = f"{dir_part}{wind_kts:02d}G{gust_kts:02d}KT"
 
-        # Temperature / Dew point: always display Celsius (append 'C')
+        # Temperature / Dew point: preserve source units and omit missing values.
         temp = obs.get('temperature') or obs.get('temp') or obs.get('air_temperature')
         dew = obs.get('dew_point') or obs.get('dewpoint')
 
-        def to_celsius_int(val):
+        # Temperature can be absent in observation data; fall back to period temperature.
+        period_temp = None
+        period_temp_unit = None
+        try:
+            if periods and len(periods) > 0:
+                period_temp = periods[0].get('temperature')
+                period_temp_unit = periods[0].get('temperatureUnit')
+        except Exception:
+            period_temp = None
+            period_temp_unit = None
+
+        def parse_temp_int(val):
             try:
-                v = float(val)
-                return int(round((v - 32.0) * 5.0 / 9.0))
+                return int(round(float(val)))
             except Exception:
                 return None
 
-        t_c = to_celsius_int(temp)
-        d_c = to_celsius_int(dew)
+        def normalize_temp_unit(unit: Optional[str], fallback: str = 'F') -> str:
+            if not unit:
+                return fallback
+            u = str(unit).strip().upper()
+            if u.startswith('F'):
+                return 'F'
+            if u.startswith('C'):
+                return 'C'
+            if u.startswith('K'):
+                return 'K'
+            return fallback
+
+        cfg_temp_unit = self.bot.config.get('Weather', 'temperature_unit', fallback='fahrenheit').lower()
+        default_unit = 'C' if cfg_temp_unit.startswith('c') else 'F'
+
+        t_val = parse_temp_int(temp)
+        if t_val is None:
+            t_val = parse_temp_int(period_temp)
+
+        d_val = parse_temp_int(dew)
+
+        t_unit = normalize_temp_unit(
+            obs.get('temperature_unit') or obs.get('temp_unit') or obs.get('air_temperature_unit') or period_temp_unit,
+            fallback=default_unit,
+        )
+        d_unit = normalize_temp_unit(
+            obs.get('dew_point_unit') or obs.get('dewpoint_unit') or obs.get('temperature_unit') or obs.get('temp_unit') or period_temp_unit,
+            fallback=t_unit,
+        )
 
         def metar_temp(v: Optional[int]) -> str:
             if v is None:
-                return '//'  # unknown
+                return ''
             if v < 0:
                 return f"M{abs(v):02d}"
             return f"{v:02d}"
 
-        t_field = metar_temp(t_c)
-        d_field = metar_temp(d_c)
-        # Use Celsius and append unit only to the dew value (e.g., 18/03C)
-        unit_letter = 'C'
-        temp_dew_field = f"{t_field}/{d_field}{unit_letter}"
+        t_field = metar_temp(t_val)
+        d_field = metar_temp(d_val)
+
+        if t_field and d_field:
+            if t_unit == d_unit:
+                temp_dew_field = f"{t_field}/{d_field}{t_unit}"
+            else:
+                temp_dew_field = f"{t_field}{t_unit}/{d_field}{d_unit}"
+        elif t_field:
+            temp_dew_field = f"{t_field}{t_unit}"
+        elif d_field:
+            temp_dew_field = f"DP{d_field}{d_unit}"
+        else:
+            temp_dew_field = ''
 
         # Visibility: produce SM (statute miles) as METAR uses SM in US
         vis = obs.get('visibility') or obs.get('visibility_mi') or obs.get('visibility_km')
@@ -405,8 +451,8 @@ class WxMetarCommand(BaseCommand):
             parts_out.append(wx_codes)
         if cloud_layer:
             parts_out.append(cloud_layer)
-        # Temperature/dew in METAR style (unit only on last value)
-        parts_out.append(temp_dew_field)
+        if temp_dew_field:
+            parts_out.append(temp_dew_field)
         if alt_field:
             parts_out.append(alt_field)
 
@@ -418,16 +464,20 @@ class WxMetarCommand(BaseCommand):
             if periods and len(periods) >= 3:
                 next_day = periods[1]
                 next_night = periods[2]
-                name = (next_day.get('name') or 'Next')[:3].upper()
+                name = (next_day.get('name') or 'Next').upper()
                 h = next_day.get('temperature')
                 l = next_night.get('temperature')
                 if h is not None and l is not None:
                     try:
-                        # convert to Celsius for RMK
-                        hnum = to_celsius_int(h)
-                        lnum = to_celsius_int(l)
+                        hnum = parse_temp_int(h)
+                        lnum = parse_temp_int(l)
+                        h_unit = normalize_temp_unit(next_day.get('temperatureUnit'), fallback=default_unit)
+                        l_unit = normalize_temp_unit(next_night.get('temperatureUnit'), fallback=h_unit)
                         if hnum is not None and lnum is not None:
-                            remarks_parts.append(f"{name} H{hnum} L{lnum}C")
+                            if h_unit == l_unit:
+                                remarks_parts.append(f"{name} H{hnum} L{lnum}{h_unit}")
+                            else:
+                                remarks_parts.append(f"{name} H{hnum}{h_unit} L{lnum}{l_unit}")
                     except Exception:
                         pass
                 # include a short next-day weather code if we can
@@ -444,7 +494,7 @@ class WxMetarCommand(BaseCommand):
             pass
 
         # If not enough data, fall back to human-friendly summary
-        if (not obs or (t_c is None and d_c is None and wind_kts == 0 and not alt_field)):
+        if (not obs or (t_val is None and d_val is None and wind_kts == 0 and not alt_field)):
             try:
                 human = await self._wx.get_weather_for_location(f"{lat},{lon}", 'coordinates', message=message)
                 await self.send_response(message, human)
