@@ -312,6 +312,33 @@ class WxMetarCommand(BaseCommand):
                 return 'K'
             return fallback
 
+        def convert_temp_value(value: Optional[int], from_unit: str, to_unit: str) -> Optional[int]:
+            if value is None:
+                return None
+            fu = (from_unit or '').upper()
+            tu = (to_unit or '').upper()
+            if fu == tu:
+                return value
+            try:
+                v = float(value)
+                if fu == 'F' and tu == 'C':
+                    return int(round((v - 32.0) * 5.0 / 9.0))
+                if fu == 'C' and tu == 'F':
+                    return int(round((v * 9.0 / 5.0) + 32.0))
+                if fu == 'K' and tu == 'C':
+                    return int(round(v - 273.15))
+                if fu == 'C' and tu == 'K':
+                    return int(round(v + 273.15))
+                if fu == 'F' and tu == 'K':
+                    c = (v - 32.0) * 5.0 / 9.0
+                    return int(round(c + 273.15))
+                if fu == 'K' and tu == 'F':
+                    c = v - 273.15
+                    return int(round((c * 9.0 / 5.0) + 32.0))
+            except Exception:
+                return value
+            return value
+
         if self.USE_BOT_CONFIG_TEMP_UNIT:
             cfg_temp_unit = self.bot.config.get('Weather', 'temperature_unit', fallback='fahrenheit').lower()
             default_unit = 'C' if cfg_temp_unit.startswith('c') else 'F'
@@ -332,6 +359,13 @@ class WxMetarCommand(BaseCommand):
             obs.get('dew_point_unit') or obs.get('dewpoint_unit') or obs.get('temperature_unit') or obs.get('temp_unit') or period_temp_unit,
             fallback=t_unit,
         )
+
+        # Internal mode: always output Celsius values, converting numeric fields as needed.
+        if not self.USE_BOT_CONFIG_TEMP_UNIT:
+            t_val = convert_temp_value(t_val, t_unit, 'C')
+            d_val = convert_temp_value(d_val, d_unit, 'C')
+            t_unit = 'C'
+            d_unit = 'C'
 
         def metar_temp(v: Optional[int]) -> str:
             if v is None:
@@ -511,6 +545,10 @@ class WxMetarCommand(BaseCommand):
                         ptemp = parse_temp_int(period_to_use.get('temperature'))
                         pname = (period_to_use.get('name') or 'Next').upper()
                         punit = normalize_temp_unit(period_to_use.get('temperatureUnit'), fallback=default_unit)
+
+                        if not self.USE_BOT_CONFIG_TEMP_UNIT:
+                            ptemp = convert_temp_value(ptemp, punit, 'C')
+                            punit = 'C'
                         
                         if ptemp is not None:
                             # Just report this one period's temp; don't assume day/night pairing
