@@ -757,8 +757,25 @@ class WxCommand(BaseCommand):
 
                 # Wait for bot TX rate limiter
                 import asyncio
-                rate_limit = self.bot.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
-                sleep_time = max(rate_limit + 1.0, 2.0)
+                
+                # Get rate limit from config or bot_tx_rate_limiter
+                try:
+                    # Try to get from config first
+                    if hasattr(self.bot, 'config') and self.bot.config.has_option('Bot', 'bot_tx_rate_limit_seconds'):
+                        rate_limit = self.bot.config.getfloat('Bot', 'bot_tx_rate_limit_seconds')
+                        self.logger.info(f"Got rate_limit from config: {rate_limit}")
+                    # Fallback to bot_tx_rate_limiter.seconds
+                    elif hasattr(self.bot, 'bot_tx_rate_limiter') and hasattr(self.bot.bot_tx_rate_limiter, 'seconds'):
+                        rate_limit = self.bot.bot_tx_rate_limiter.seconds
+                        self.logger.info(f"Got rate_limit from bot_tx_rate_limiter.seconds: {rate_limit}")
+                    else:
+                        rate_limit = 1.0
+                        self.logger.warning(f"Could not find rate_limit config or limiter, using fallback: {rate_limit}")
+                except Exception as e:
+                    rate_limit = 1.0
+                    self.logger.warning(f"Error getting rate_limit: {e}, using fallback: {rate_limit}")
+                
+                sleep_time = max(rate_limit + 1.0, 3.1)
                 self.logger.info(f"Sleeping {sleep_time}s before sending alerts...")
                 await asyncio.sleep(sleep_time)
 
