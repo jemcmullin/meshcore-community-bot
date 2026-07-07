@@ -141,7 +141,7 @@ class WxTafCommand(BaseCommand):
             high_kts = self._parse_speed_to_kts(speed_raw, use_high=True)
             if high_kts > kts:
                 gust_kts = high_kts
-        if gust_kts > kts:
+        if gust_kts > kts + 5 and gust_kts > 15:
             return f"{dir_part}@{kts:02d}G{gust_kts:02d}kt"
         return f"{dir_part}@{kts:02d}kt"
 
@@ -220,7 +220,7 @@ class WxTafCommand(BaseCommand):
             if isinstance(city, dict):
                 city = city.get('name', '')
             if city:
-                clean = re.sub(r'[^A-Za-z0-9]', '', city.split(',')[0]).upper()
+                clean = re.sub(r'[^A-Za-z0-9]', '', city.split(',')[0])
                 if clean:
                     return clean[:10]
         except Exception:

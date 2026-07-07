@@ -287,7 +287,7 @@ class WxMetarCommand(BaseCommand):
             is_variable = wind_dir is None or 'variable' in str(wind_dir).lower() or 'vrb' in str(wind_dir).lower()
             dir_part = 'VRB' if is_variable or wind_dir_int is None else f"{wind_dir_int:03d}"
             wind_field = f"{dir_part}@{wind_kts:02d}kt"
-            if gust_kts > 0:
+            if gust_kts > wind_kts + 5 and gust_kts > 11:
                 wind_field = f"{dir_part}@{wind_kts:02d}G{gust_kts:02d}kt"
 
         # Temperature / Dew point: preserve source units and omit missing values.

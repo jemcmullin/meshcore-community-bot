@@ -745,7 +745,11 @@ class WxCommand(BaseCommand):
                 weather_text = weather_data[1]
                 alert_text = weather_data[2]
                 
+                self.logger.debug(f"weather_text preview: {weather_text[:80] if weather_text else 'empty'}")
+                self.logger.debug(f"alert_text preview: {alert_text[:80] if alert_text else 'empty'}")
+                
                 weather_sent = await self.send_response(message, weather_text)
+                self.logger.info(f"Weather send result: {weather_sent}")
                 
                 if not weather_sent:
                     self.logger.warning(f"Weather suppressed by coordinator; skipping alerts")
@@ -755,12 +759,15 @@ class WxCommand(BaseCommand):
                 import asyncio
                 rate_limit = self.bot.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
                 sleep_time = max(rate_limit + 1.0, 2.0)
+                self.logger.info(f"Sleeping {sleep_time}s before sending alerts...")
                 await asyncio.sleep(sleep_time)
 
                 # Send alerts via send_channel_message to bypass coordinator
                 # (coordinated_var is already True, so it skips coordination and just sends)
+                self.logger.info(f"About to send alerts to channel: {message.channel or '#weather'}")
                 self.logger.debug(f"Sending alerts: {alert_text[:100]}...")
-                await self.bot.command_manager.send_channel_message(message.channel or "#weather", alert_text)
+                result = await self.bot.command_manager.send_channel_message(message.channel or "#weather", alert_text)
+                self.logger.info(f"Alert send result: {result}")
             elif forecast_type == "multiday":
                 # Use message splitting for multi-day forecasts
                 await self._send_multiday_forecast(message, weather_data)
