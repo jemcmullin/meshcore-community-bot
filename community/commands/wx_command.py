@@ -835,21 +835,21 @@ class WxCommand(BaseCommand):
             if location_type == "coordinates" and address_info:
                 city = address_info.get('city', '')
                 if city:
-                    location_prefix = f"{city[:_MAX_CITY_CHARS]}: "
+                    location_prefix = f"{city[:_MAX_CITY_CHARS]} "
             elif location_type == "city" and address_info:
-                location_prefix = f"{actual_city[:_MAX_CITY_CHARS]}: "
+                location_prefix = f"{actual_city[:_MAX_CITY_CHARS]} "
             elif location_type == "zipcode":
                 # Always show city name for zipcode lookups via reverse geocoding
                 cache_key = (round(lat, 4), round(lon, 4))
                 cached = self._coord_city_cache.get(cache_key)
                 if cached:
-                    location_prefix = f"{cached[:_MAX_CITY_CHARS]}: "
+                    location_prefix = f"{cached[:_MAX_CITY_CHARS]} "
                 else:
                     location_str = self._coordinates_to_location_string(lat, lon)
                     if location_str:
                         city = location_str.split(',', 1)[0].strip()
                         self._coord_city_cache[cache_key] = city
-                        location_prefix = f"{city[:_MAX_CITY_CHARS]}: "
+                        location_prefix = f"{city[:_MAX_CITY_CHARS]} "
 
             # Get max message length dynamically, then reserve space for the location prefix
             # so all formatters pack the weather body into the remaining budget.
