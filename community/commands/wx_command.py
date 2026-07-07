@@ -997,7 +997,8 @@ class WxCommand(BaseCommand):
             day_name = self._noaa_period_display_name(current)
             temp = current.get('temperature', 'N/A')
             temp_unit = current.get('temperatureUnit', 'F')
-            short_forecast = current.get('shortForecast', 'Unknown')
+            _sf_raw = current.get('shortForecast', 'Unknown')
+            short_forecast = self._strip_forecast_qualifiers(_sf_raw)
             wind_speed = current.get('windSpeed', '')
             wind_direction = current.get('windDirection', '')
             detailed_forecast = current.get('detailedForecast', '')
@@ -1007,7 +1008,7 @@ class WxCommand(BaseCommand):
             precip_chance = self.extract_precip_chance(detailed_forecast)
 
             # Create compact but complete weather string with emoji
-            weather_emoji = self.get_weather_emoji(short_forecast)
+            weather_emoji = self.get_weather_emoji(_sf_raw)  # use raw for accurate emoji
             weather = f"{day_name}: {weather_emoji}{short_forecast} {temp}°{temp_unit}"
 
             # Add wind info if available
@@ -1017,7 +1018,7 @@ class WxCommand(BaseCommand):
                     wind_num = wind_match.group(1)
                     wind_dir = self.abbreviate_wind_direction(wind_direction)
                     if wind_dir:
-                        weather += f" {wind_dir}{wind_num}"
+                        weather += f" {wind_dir}@{wind_num}"
 
             # PRIORITIZE: Add all available details to current period first
             # Get observation station data for more accurate current conditions
@@ -1126,7 +1127,8 @@ class WxCommand(BaseCommand):
                 # Always add today_period - it represents tomorrow's daytime when current is Tonight
                 period_name = self._noaa_period_display_name(period)
                 period_temp = period.get('temperature', '')
-                period_short = period.get('shortForecast', '')
+                _ps_raw = period.get('shortForecast', '')
+                period_short = self._strip_forecast_qualifiers(_ps_raw)
                 period_detailed = period.get('detailedForecast', '')
                 period_wind_speed = period.get('windSpeed', '')
                 period_wind_direction = period.get('windDirection', '')
@@ -1137,7 +1139,7 @@ class WxCommand(BaseCommand):
                         period_detailed, self._noaa_period_temp_symbol(period)
                     )
 
-                    period_emoji = self.get_weather_emoji(period_short)
+                    period_emoji = self.get_weather_emoji(_ps_raw)  # use raw for accurate emoji
                     if period_high_low:
                         period_str = f" | {period_name}: {period_emoji}{period_short} {period_high_low}"
                     else:
@@ -1152,7 +1154,7 @@ class WxCommand(BaseCommand):
                                 wind_num = wind_match.group(1)
                                 wind_dir = self.abbreviate_wind_direction(period_wind_direction)
                                 if wind_dir:
-                                    wind_info = f" {wind_dir}{wind_num}"
+                                    wind_info = f" {wind_dir}@{wind_num}"
                                     if self._count_display_width(test_str + wind_info) <= max_length:
                                         period_str += wind_info
 
@@ -1186,7 +1188,8 @@ class WxCommand(BaseCommand):
                     period = tonight_period[1]
                     period_name = self._noaa_period_display_name(period)
                     period_temp = period.get('temperature', '')
-                    period_short = period.get('shortForecast', '')
+                    _ps_raw = period.get('shortForecast', '')
+                    period_short = self._strip_forecast_qualifiers(_ps_raw)
                     period_detailed = period.get('detailedForecast', '')
                     period_wind_speed = period.get('windSpeed', '')
                     period_wind_direction = period.get('windDirection', '')
@@ -1197,7 +1200,7 @@ class WxCommand(BaseCommand):
                             period_detailed, self._noaa_period_temp_symbol(period)
                         )
 
-                        period_emoji = self.get_weather_emoji(period_short)
+                        period_emoji = self.get_weather_emoji(_ps_raw)  # use raw for accurate emoji
                         if period_high_low:
                             period_str = f" | {period_name}: {period_emoji}{period_short} {period_high_low}"
                         else:
@@ -1212,7 +1215,7 @@ class WxCommand(BaseCommand):
                                     wind_num = wind_match.group(1)
                                     wind_dir = self.abbreviate_wind_direction(period_wind_direction)
                                     if wind_dir:
-                                        wind_info = f" {wind_dir}{wind_num}"
+                                        wind_info = f" {wind_dir}@{wind_num}"
                                         if self._count_display_width(test_str + wind_info) <= max_length:
                                             period_str += wind_info
 
@@ -1235,7 +1238,8 @@ class WxCommand(BaseCommand):
                 period = tomorrow_period[1]
                 period_name = self._noaa_period_display_name(period)
                 period_temp = period.get('temperature', '')
-                period_short = period.get('shortForecast', '')
+                _ps_raw = period.get('shortForecast', '')
+                period_short = self._strip_forecast_qualifiers(_ps_raw)
                 period_detailed = period.get('detailedForecast', '')
                 period_wind_speed = period.get('windSpeed', '')
                 period_wind_direction = period.get('windDirection', '')
@@ -1283,7 +1287,7 @@ class WxCommand(BaseCommand):
                             else:
                                 abbreviated_forecast = ' '.join(meaningful_words)
 
-                    period_emoji = self.get_weather_emoji(period_short)
+                    period_emoji = self.get_weather_emoji(_ps_raw)  # use raw for accurate emoji
                     if period_high_low:
                         period_str = f" | {period_name}: {period_emoji}{abbreviated_forecast} {period_high_low}"
                     else:
@@ -1300,7 +1304,7 @@ class WxCommand(BaseCommand):
                                 wind_num = wind_match.group(1)
                                 wind_dir = self.abbreviate_wind_direction(period_wind_direction)
                                 if wind_dir:
-                                    wind_info = f" {wind_dir}{wind_num}"
+                                    wind_info = f" {wind_dir}@{wind_num}"
                                     if self._count_display_width(test_str + wind_info) <= max_length:
                                         period_str += wind_info
 
@@ -1591,7 +1595,8 @@ class WxCommand(BaseCommand):
                 period_name = self._noaa_period_display_name(period)
                 temp = period.get('temperature', '')
                 temp_unit = period.get('temperatureUnit', 'F')
-                short_forecast = period.get('shortForecast', '')
+                _sf_raw = period.get('shortForecast', '')
+                short_forecast = self._strip_forecast_qualifiers(_sf_raw)
                 detailed_forecast = period.get('detailedForecast', '')
                 wind_speed = period.get('windSpeed', '')
                 wind_direction = period.get('windDirection', '')
@@ -1600,7 +1605,7 @@ class WxCommand(BaseCommand):
                     continue
 
                 # Create period string
-                emoji = self.get_weather_emoji(short_forecast)
+                emoji = self.get_weather_emoji(_sf_raw)  # use raw for accurate emoji
                 period_str = f"{period_name}: {emoji}{short_forecast} {temp}°{temp_unit}"
 
                 # Add wind info
@@ -1610,7 +1615,7 @@ class WxCommand(BaseCommand):
                         wind_num = wind_match.group(1)
                         wind_dir = self.abbreviate_wind_direction(wind_direction)
                         if wind_dir:
-                            period_str += f" {wind_dir}{wind_num}"
+                            period_str += f" {wind_dir}@{wind_num}"
 
                 # Try to extract high/low
                 high_low = self.extract_high_low(
@@ -1850,7 +1855,7 @@ class WxCommand(BaseCommand):
 
         # Add pressure if available and space allows
         if pressure:
-            pressure_str = f" P:{pressure}mb"
+            pressure_str = f" P:{pressure}hPa"
             if self._count_display_width(result + pressure_str) + current_weather_length <= max_length:
                 result += pressure_str
 
@@ -3097,28 +3102,44 @@ class WxCommand(BaseCommand):
         return time_str
 
     def abbreviate_wind_direction(self, direction: str) -> str:
-        """Abbreviate wind direction to emoji + 2-3 characters"""
+        """Abbreviate wind direction to a compact compass string (e.g. 'NW', 'WSW')."""
         if not direction:
             return ""
 
-        direction = direction.upper()
-        replacements = {
-            "NORTHWEST": "NW",
-            "NORTHEAST": "NE",
-            "SOUTHWEST": "SW",
-            "SOUTHEAST": "SE",
-            "NORTH": "N",
-            "EAST": "E",
-            "SOUTH": "S",
-            "WEST": "W"
+        d = direction.strip().upper()
+
+        # Already a standard abbreviation (N, NE, NNE, NNW, ENE, etc.) — return as-is
+        _COMPASS = {
+            "N", "NNE", "NE", "ENE",
+            "E", "ESE", "SE", "SSE",
+            "S", "SSW", "SW", "WSW",
+            "W", "WNW", "NW", "NNW",
         }
+        if d in _COMPASS:
+            return d
 
-        for full, abbrev in replacements.items():
-            if full in direction:
-                return abbrev
+        # Full English words → abbreviation
+        _FULL = {
+            "NORTH-NORTHWEST": "NNW", "NORTH NORTHWEST": "NNW",
+            "NORTH-NORTHEAST": "NNE", "NORTH NORTHEAST": "NNE",
+            "SOUTH-SOUTHWEST": "SSW", "SOUTH SOUTHWEST": "SSW",
+            "SOUTH-SOUTHEAST": "SSE", "SOUTH SOUTHEAST": "SSE",
+            "EAST-NORTHEAST":  "ENE", "EAST NORTHEAST":  "ENE",
+            "EAST-SOUTHEAST":  "ESE", "EAST SOUTHEAST":  "ESE",
+            "WEST-NORTHWEST":  "WNW", "WEST NORTHWEST":  "WNW",
+            "WEST-SOUTHWEST":  "WSW", "WEST SOUTHWEST":  "WSW",
+            "NORTHWEST": "NW", "NORTHEAST": "NE",
+            "SOUTHWEST": "SW", "SOUTHEAST": "SE",
+            "NORTH": "N", "SOUTH": "S",
+            "EAST":  "E", "WEST":  "W",
+        }
+        # Longest-match first (already ordered above, but sort for safety)
+        for full in sorted(_FULL, key=len, reverse=True):
+            if full in d:
+                return _FULL[full]
 
-        # If no match, return first 2 characters with generic wind emoji
-        return f"Wind {direction[:2]}" if len(direction) >= 2 else f"Wind {direction}"
+        # Fallback: return whatever was given, capped at 3 chars
+        return d[:3]
 
     def extract_humidity(self, text: str) -> str:
         """Extract humidity percentage from forecast text"""
@@ -3487,7 +3508,7 @@ class WxCommand(BaseCommand):
             conditions.append(f"Vis:{obs_data['visibility']}mi")
 
         if 'pressure' in obs_data:
-            conditions.append(f"P:{obs_data['pressure']}mb")
+            conditions.append(f"P:{obs_data['pressure']}hPa")
 
         return " ".join(conditions[:3])  # Limit to 3 conditions to avoid overflow
 
@@ -3516,7 +3537,7 @@ class WxCommand(BaseCommand):
         elif any(word in condition_lower for word in ['fog', 'mist', 'haze']):
             return "🌫️"
         elif any(word in condition_lower for word in ['smoke']):
-            return "Smk"
+            return "🌫️"
         elif any(word in condition_lower for word in ['windy', 'breezy']):
             return "🪁"
         else:
