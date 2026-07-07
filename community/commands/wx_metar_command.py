@@ -86,7 +86,7 @@ class WxMetarCommand(BaseCommand):
             if isinstance(city, dict):
                 city = city.get('name', '')
             if city:
-                clean = re.sub(r'[^A-Za-z0-9]', '', city.split(',')[0]).upper()
+                clean = re.sub(r'[^A-Za-z0-9]', '', city.split(',')[0])
                 if clean:
                     return clean[:10]
         except Exception:
@@ -95,6 +95,30 @@ class WxMetarCommand(BaseCommand):
         if m:
             return m.group(1)
         return f"MESH{int(abs(lat * 100) % 1000):03d}"
+
+    def _period_label(self, period: str) -> str:
+        if not period:
+            return ''
+        name = period.upper()
+        label_map = {
+            'THIS AFTERNOON': 'AFTN',
+            'THIS MORNING': 'MORN',
+            'TONIGHT': 'NGT',
+            'OVERNIGHT': 'OVNT',
+            'TOMORROW': 'TMRW',
+            'TOMORROW NIGHT': 'TMRW NGT',
+            'MONDAY': 'MON', 'MONDAY NIGHT': 'MON NGT',
+            'TUESDAY': 'TUE', 'TUESDAY NIGHT': 'TUE NGT',
+            'WEDNESDAY': 'WED', 'WEDNESDAY NIGHT': 'WED NGT',
+            'THURSDAY': 'THU', 'THURSDAY NIGHT': 'THU NGT',
+            'FRIDAY': 'FRI', 'FRIDAY NIGHT': 'FRI NGT',
+            'SATURDAY': 'SAT', 'SATURDAY NIGHT': 'SAT NGT',
+            'SUNDAY': 'SUN', 'SUNDAY NIGHT': 'SUN NGT',
+        }
+        label = label_map.get(name, name[:6] if name else '')
+        if label:
+            return label
+        return ''
 
     @staticmethod
     def _round_wind_dir_degrees(degrees: float) -> int:
@@ -262,9 +286,9 @@ class WxMetarCommand(BaseCommand):
         else:
             is_variable = wind_dir is None or 'variable' in str(wind_dir).lower() or 'vrb' in str(wind_dir).lower()
             dir_part = 'VRB' if is_variable or wind_dir_int is None else f"{wind_dir_int:03d}"
-            wind_field = f"{dir_part}{wind_kts:02d}KT"
+            wind_field = f"{dir_part}@{wind_kts:02d}kt"
             if gust_kts > 0:
-                wind_field = f"{dir_part}{wind_kts:02d}G{gust_kts:02d}KT"
+                wind_field = f"{dir_part}@{wind_kts:02d}G{gust_kts:02d}kt"
 
         # Temperature / Dew point: preserve source units and omit missing values.
         temp = obs.get('temperature') or obs.get('temp') or obs.get('air_temperature')
@@ -530,7 +554,7 @@ class WxMetarCommand(BaseCommand):
                 if period_to_use:
                     try:
                         ptemp = parse_temp_int(period_to_use.get('temperature'))
-                        pname = (period_to_use.get('name') or 'Next').upper()
+                        pname = self._period_label(period_to_use.get('name') or 'Next')
                         punit = normalize_temp_unit(period_to_use.get('temperatureUnit'), fallback=default_unit)
 
                         if not self.USE_BOT_CONFIG_TEMP_UNIT:

@@ -692,6 +692,9 @@ class WxCommand(BaseCommand):
         try:
             # Record execution for this user
             self.record_execution(message.sender_id)
+            
+            # Debug: log the forecast type at the start
+            self.logger.debug(f"Wx request: location={location}, forecast_type={forecast_type}")
 
             # Special handling for "alerts" command
             if show_full_alerts:
@@ -732,21 +735,32 @@ class WxCommand(BaseCommand):
             weather_data = await self.get_weather_for_location(location, location_type, forecast_type, num_days, message, using_companion_location=using_companion_location)
 
             # Check if we need to send multiple messages
-            if isinstance(weather_data, tuple) and weather_data[0] == "multi_message":
-                # Send weather data first
-                await self.send_response(message, weather_data[1])
+            self.logger.debug(f"Weather data type: {type(weather_data)}, is tuple: {isinstance(weather_data, tuple)}")
+            if isinstance(weather_data, tuple):
+                self.logger.debug(f"Weather data tuple contents: {weather_data[0] if len(weather_data) > 0 else 'empty'}")
+            
+            if isinstance(weather_data, tuple) and len(weather_data) > 0 and weather_data[0] == "multi_message":
+                # Send weather through coordinator (respects queue mode all-or-nothing)
+                self.logger.info(f"Sending weather + {weather_data[3]} alerts")
+                weather_text = weather_data[1]
+                alert_text = weather_data[2]
+                
+                weather_sent = await self.send_response(message, weather_text)
+                
+                if not weather_sent:
+                    self.logger.warning(f"Weather suppressed by coordinator; skipping alerts")
+                    return True
 
-                # Wait for bot TX rate limiter to allow next message
+                # Wait for bot TX rate limiter
                 import asyncio
                 rate_limit = self.bot.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
-                # Use a conservative sleep time to avoid rate limiting
-                sleep_time = max(rate_limit + 1.0, 2.0)  # At least 2 seconds, or rate_limit + 1 second
+                sleep_time = max(rate_limit + 1.0, 2.0)
                 await asyncio.sleep(sleep_time)
 
-                # Send the special weather statement (already formatted with prioritization)
-                alert_text = weather_data[2]
-                weather_data[3]
-                await self.send_response(message, alert_text)
+                # Send alerts via send_channel_message to bypass coordinator
+                # (coordinated_var is already True, so it skips coordination and just sends)
+                self.logger.debug(f"Sending alerts: {alert_text[:100]}...")
+                await self.bot.command_manager.send_channel_message(message.channel or "#weather", alert_text)
             elif forecast_type == "multiday":
                 # Use message splitting for multi-day forecasts
                 await self._send_multiday_forecast(message, weather_data)
@@ -909,23 +923,29 @@ class WxCommand(BaseCommand):
             if forecast_type == "default":
                 alerts_result = self.get_weather_alerts_noaa(lat, lon, return_full_data=False)
                 if alerts_result == self.ERROR_FETCHING_DATA or alerts_result == self.NO_ALERTS:
-                    pass
+                    self.logger.debug(f"Alerts result: {alerts_result}")
                 else:
-                    full_alert_text, abbreviated_alert_text, alert_count = alerts_result
-                    if alert_count > 0:
-                        # Get full alert data for prioritized formatting
-                        alerts_full_result = self.get_weather_alerts_noaa(lat, lon, return_full_data=True)
-                        if alerts_full_result not in [self.ERROR_FETCHING_DATA, self.NO_ALERTS]:
-                            alerts_list, _ = alerts_full_result
-                            # Format with prioritization and summary
-                            formatted_alert_text = self._format_alerts_compact_summary(alerts_list, alert_count, max_length=max_length)
-                        else:
-                            # Fallback to old format
-                            formatted_alert_text = full_alert_text
+                    try:
+                        full_alert_text, abbreviated_alert_text, alert_count = alerts_result
+                        self.logger.debug(f"Unpacked alerts: count={alert_count}, text preview={abbreviated_alert_text[:50] if abbreviated_alert_text else 'None'}")
+                        if alert_count > 0:
+                            # Get full alert data for prioritized formatting
+                            alerts_full_result = self.get_weather_alerts_noaa(lat, lon, return_full_data=True)
+                            if alerts_full_result not in [self.ERROR_FETCHING_DATA, self.NO_ALERTS]:
+                                alerts_list, _ = alerts_full_result
+                                # Format with prioritization and summary
+                                formatted_alert_text = self._format_alerts_compact_summary(alerts_list, alert_count, max_length=max_length)
+                            else:
+                                # Fallback to old format
+                                formatted_alert_text = full_alert_text
 
-                        # Always send weather first, then alerts in separate message
-                        self.logger.info(f"Found {alert_count} alerts - using two-message mode")
-                        return ("multi_message", f"{location_prefix}{weather}", formatted_alert_text, alert_count)
+                            # Always send weather first, then alerts in separate message
+                            self.logger.info(f"Found {alert_count} alerts - using two-message mode")
+                            return ("multi_message", f"{location_prefix}{weather}", formatted_alert_text, alert_count)
+                        else:
+                            self.logger.debug(f"No alerts found (count=0)")
+                    except Exception as e:
+                        self.logger.error(f"Error unpacking or processing alerts: {e}", exc_info=True)
 
             return f"{location_prefix}{weather}"
 

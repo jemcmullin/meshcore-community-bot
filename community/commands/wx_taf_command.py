@@ -142,8 +142,8 @@ class WxTafCommand(BaseCommand):
             if high_kts > kts:
                 gust_kts = high_kts
         if gust_kts > kts:
-            return f"{dir_part}{kts:02d}G{gust_kts:02d}KT"
-        return f"{dir_part}{kts:02d}KT"
+            return f"{dir_part}@{kts:02d}G{gust_kts:02d}kt"
+        return f"{dir_part}@{kts:02d}kt"
 
     def _cloud_field(self, short_forecast: str) -> str:
         s = short_forecast.lower()
@@ -184,7 +184,8 @@ class WxTafCommand(BaseCommand):
         return (intensity + ''.join(codes)) if codes else ''
 
     def _prob_field(self, period: dict, wx_codes: str) -> str:
-        if not wx_codes:
+        # only if TS, RA, SN in wx_codes
+        if not wx_codes or not any(c in wx_codes for c in ['TS', 'RA', 'SN']):
             return ''
         try:
             pop = period.get('probabilityOfPrecipitation', {}).get('value')
@@ -193,7 +194,9 @@ class WxTafCommand(BaseCommand):
         if pop is None:
             return ''
         try:
-            pop_int = int(pop)
+            pop_int_raw = int(pop)
+            # nearest 10% for brevity
+            pop_int = int(round(pop_int_raw / 10.0) * 10)
         except Exception:
             return ''
         return f"PROB{pop_int}" if pop_int > 0 else ''
