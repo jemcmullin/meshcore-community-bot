@@ -243,7 +243,7 @@ class WxTafCommand(BaseCommand):
         label_map = {
             'THIS AFTERNOON': 'AFTN',
             'THIS MORNING': 'MORN',
-            'TONIGHT': 'NGT',
+            'TONIGHT': 'NIGHT',
             'OVERNIGHT': 'OVNT',
             'TOMORROW': 'TMRW',
             'TOMORROW NIGHT': 'TMRW NGT',
