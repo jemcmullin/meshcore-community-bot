@@ -188,6 +188,22 @@ class WxMetarCommand(BaseCommand):
 
         station = make_station_display(station, content)
 
+        # Time string: prefer observation timestamp, else first period startTime
+        time_str = ''
+        try:
+            ts = None
+            if obs:
+                ts = obs.get('timestamp')
+            if not ts and periods and len(periods) > 0:
+                ts = periods[0].get('startTime')
+            if ts:
+                if isinstance(ts, str) and ts.endswith('Z'):
+                    ts = ts.replace('Z', '+00:00')
+                dt = datetime.fromisoformat(ts)
+                time_str = dt.strftime('%d%H%MZ')
+        except Exception:
+            time_str = ''
+
         # Wind: present as readable with METAR knot primary and configured unit in parens
         wind_dir = obs.get('wind_direction') or obs.get('wind_dir') or obs.get('wind_bearing')
         wind_speed = obs.get('wind_speed') or obs.get('wind_mph') or obs.get('wind_kph') or 0
