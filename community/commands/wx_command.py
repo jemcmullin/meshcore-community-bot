@@ -2104,7 +2104,7 @@ class WxCommand(BaseCommand):
                     elif "alert" in title_lower:
                         event_type = "Alert"
                         # Extract event name before "Alert" (e.g., "Air Quality Alert" -> "Air Quality")
-                        event_match = re.search(r'^([^A]+?)\s+Alert', title, re.IGNORECASE)
+                        event_match = re.search(r'^(.+?)\s+Alert', title, re.IGNORECASE)
                         event = event_match.group(1).strip() if event_match else "Alert"
                     elif "statement" in title_lower:
                         event_type = "Statement"
