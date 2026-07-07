@@ -2101,6 +2101,11 @@ class WxCommand(BaseCommand):
                         event_match = re.search(r'^([^A]+?)\s+Advisory', title, re.IGNORECASE)
                         if event_match:
                             event = event_match.group(1).strip()
+                    elif "alert" in title_lower:
+                        event_type = "Alert"
+                        # Extract event name before "Alert" (e.g., "Air Quality Alert" -> "Air Quality")
+                        event_match = re.search(r'^([^A]+?)\s+Alert', title, re.IGNORECASE)
+                        event = event_match.group(1).strip() if event_match else "Alert"
                     elif "statement" in title_lower:
                         event_type = "Statement"
                         # For statements, try to extract more descriptive info
@@ -2520,6 +2525,7 @@ class WxCommand(BaseCommand):
                 'Warning': 40,
                 'Watch': 30,
                 'Advisory': 20,
+                'Alert': 15,
                 'Statement': 10,
                 'Unknown': 0
             }
@@ -2593,6 +2599,7 @@ class WxCommand(BaseCommand):
             'Warning': 'Warn',
             'Watch': 'Watch',
             'Advisory': 'Adv',
+            'Alert': 'Alert',
             'Statement': 'Stmt'
         }.get(event_type, event_type)
 
@@ -2710,6 +2717,7 @@ class WxCommand(BaseCommand):
                 'Warning': 'Warn',
                 'Watch': 'Watch',
                 'Advisory': 'Adv',
+                'Alert': 'Alert',
                 'Statement': 'Stmt'
             }.get(event_type, event_type)
 
