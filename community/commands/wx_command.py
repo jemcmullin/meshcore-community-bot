@@ -312,15 +312,47 @@ class WxCommand(BaseCommand):
                 temp_token = None
         if len(periods) > 1:
             nextp = periods[1]
-            # prefer extract_high_low from detailed forecast
+            # prefer extract_high_low from detailed forecast (may return H/L pair)
             temp_unit = (nextp.get('temperatureUnit') or 'F').upper()
             units_token = self._format_temp_unit(temp_unit)
             hl = self._wx.extract_high_low(nextp.get('detailedForecast', ''), units_str=(units_token if units_token else 'F')) if hasattr(self._wx, 'extract_high_low') else ''
-            # fallback: use temperature value
+
+            # If extract_high_low didn't yield a high/low pair, try to get high from nextp
+            high_val = None
+            low_val = None
             if not hl:
                 h = nextp.get('temperature')
                 if h is not None:
-                    hl = f"H:{int(round(h))}{units_token}"
+                    high_val = int(round(h))
+
+                # Try to find the corresponding night period after nextp for the low temperature
+                try:
+                    next_index = 1
+                    # find index of nextp in periods to be robust
+                    for i, p in enumerate(periods):
+                        if p is nextp:
+                            next_index = i
+                            break
+                    # search subsequent periods for a night period (Tonight/overnight)
+                    for p in periods[next_index+1:]:
+                        pname = (p.get('name') or '').lower()
+                        if 'night' in pname or 'tonight' in pname or 'overnight' in pname:
+                            lv = p.get('temperature')
+                            if lv is not None:
+                                low_val = int(round(lv))
+                            break
+                except Exception:
+                    low_val = None
+
+                # Build hl string from found values
+                if high_val is not None and low_val is not None:
+                    hl = f"H:{high_val}{units_token} L:{low_val}{units_token}"
+                elif high_val is not None:
+                    hl = f"H:{high_val}{units_token}"
+                elif low_val is not None:
+                    hl = f"L:{low_val}{units_token}"
+
+            # If extract_high_low returned a formatted string, use it as-is
             if hl:
                 # keep day name short
                 day_name = self._wx._noaa_period_display_name(nextp)
