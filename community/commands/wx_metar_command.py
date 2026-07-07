@@ -170,39 +170,39 @@ class WxMetarCommand(BaseCommand):
                     # keep letters and digits only, remove spaces and punctuation
                     s = re.sub(r'[^A-Za-z0-9]', '', base).upper()
                     if s:
-                        return s[:7]
+                        return s[:12]
                 except Exception:
                     pass
             # Fallback: look for a 5-digit zipcode in the message text
             try:
                 m = re.search(r'\b(\d{5})\b', message_text)
                 if m:
-                    return m.group(1)[:7]
+                    return m.group(1)[:12]
             except Exception:
                 pass
             # Final fallback: compact mesh id based on coords
             try:
-                return f"MESH{int(abs(lat*100)%1000):03d}"[:7]
+                return f"MESH{int(abs(lat*100)%1000):03d}"[:12]
             except Exception:
                 return 'MESH'
 
         station = make_station_display(station, content)
 
-        # Time string: prefer observation timestamp, else first period startTime
-        time_str = ''
-        try:
-            ts = None
-            if obs:
-                ts = obs.get('timestamp')
-            if not ts and periods and len(periods) > 0:
-                ts = periods[0].get('startTime')
-            if ts:
-                if isinstance(ts, str) and ts.endswith('Z'):
-                    ts = ts.replace('Z', '+00:00')
-                dt = datetime.fromisoformat(ts)
-                time_str = dt.strftime('%d%H%MZ')
-        except Exception:
-            time_str = ''
+        # Time string handling temporarily disabled
+        # time_str = ''
+        # try:
+        #     ts = None
+        #     if obs:
+        #         ts = obs.get('timestamp')
+        #     if not ts and periods and len(periods) > 0:
+        #         ts = periods[0].get('startTime')
+        #     if ts:
+        #         if isinstance(ts, str) and ts.endswith('Z'):
+        #             ts = ts.replace('Z', '+00:00')
+        #         dt = datetime.fromisoformat(ts)
+        #         time_str = dt.strftime('%d%H%MZ')
+        # except Exception:
+        #     time_str = ''
 
         # Wind: present as readable with METAR knot primary and configured unit in parens
         wind_dir = obs.get('wind_direction') or obs.get('wind_dir') or obs.get('wind_bearing')
@@ -289,8 +289,10 @@ class WxMetarCommand(BaseCommand):
                     v_mi = v
                 # round to nearest quarter mile
                 frac = round(v_mi * 4) / 4.0
-                if frac >= 6:
-                    vis_out = '6SM'
+                # NOAA/NWS observation sources typically report visibility up to 10 SM.
+                # Use 10SM as the explicit max
+                if frac >= 10:
+                    vis_out = '10SM'
                 else:
                     # format fractions like 1/2, 1/4, etc.
                     whole = int(frac)
@@ -392,8 +394,9 @@ class WxMetarCommand(BaseCommand):
             cloud_layer = ''
 
         parts_out = [station]
-        if time_str:
-            parts_out.append(time_str)
+        # time_str temporarily omitted from METAR output
+        # if time_str:
+        #     parts_out.append(time_str)
         if wind_field:
             parts_out.append(wind_field)
         if vis_out:
@@ -424,7 +427,7 @@ class WxMetarCommand(BaseCommand):
                         hnum = to_celsius_int(h)
                         lnum = to_celsius_int(l)
                         if hnum is not None and lnum is not None:
-                            remarks_parts.append(f"{name} H{hnum}C/L{lnum}C")
+                            remarks_parts.append(f"{name} H{hnum} L{lnum}C")
                     except Exception:
                         pass
                 # include a short next-day weather code if we can
