@@ -297,6 +297,16 @@ class WxCommand(BaseCommand):
 
         # Tonight/Day summary: try to attach next period's high/low
         day_summary = ''
+        # If current period is a night/overnight, include its low temperature if available
+        if is_night:
+            cur_temp = current.get('temperature')
+            if cur_temp is not None:
+                cur_unit = (current.get('temperatureUnit') or 'F').upper()
+                cur_unit_token = cur_unit.replace('°', '')
+                try:
+                    tokens.append(f"L:{int(round(float(cur_temp)))}{cur_unit_token}")
+                except Exception:
+                    pass
         if len(periods) > 1:
             nextp = periods[1]
             # prefer extract_high_low from detailed forecast
