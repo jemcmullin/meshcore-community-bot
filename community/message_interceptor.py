@@ -213,9 +213,10 @@ class MessageInterceptor:
 
     async def _wrapped_process_message(self, message, *args, **kwargs):
         """Set current_message context and observe incoming peer [xxxx] prefixes."""
-        # Observe incoming message for peer suppression token
+        # Observe incoming message for peer suppression token (only for non-DM).
         if not message.is_dm:
-            self.fw.observe_peer_message(message.content or "")
+            # Pass channel info so suppression only applies to matching channels.
+            self.fw.observe_peer_message(message.content or "", _channel_kind(message), message.channel or "")
 
         token = current_message_var.set(message)
         coord_token = coordinated_var.set(False)

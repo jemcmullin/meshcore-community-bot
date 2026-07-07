@@ -64,7 +64,7 @@ class FirmwareCoordinator:
             logger.warning("Failed to set identity seed from pubkey %r: %s", public_key_hex, e)
             self.bot_identity_seed = 0
 
-    def observe_peer_message(self, text: str) -> bool:
+    def observe_peer_message(self, text: str, channel_kind: Optional[int] = None, channel_name: Optional[str] = None) -> bool:
         """Check incoming channel text for a peer bot token prefix.
 
         If a peer bot's ``[xxxx] `` prefix is found and matches any pending
@@ -100,13 +100,41 @@ class FirmwareCoordinator:
         # --- END OLD CODE ---
         queue_suppressed = False
         if self.coordination_mode_queue:
-            # clear queue as conservative coordination without proper token matching
-            for entry in self.pending:
-                if not entry.suppressed:
-                    queue_suppressed = True
-                entry.suppressed = True
-            if queue_suppressed:
-                logger.info("Responses suppressed by traffic observed on channel (queue mode)")
+            # In queue mode, only suppress pending entries that match the
+            # observed channel. If no channel info is provided, be conservative
+            # and do not aggressively suppress everything.
+            if channel_kind is None and channel_name is None:
+                logger.debug("Queue mode observed traffic without channel info; skipping suppression")
+            else:
+                for entry in self.pending:
+                    try:
+                        if int(entry.channel_kind) != int(channel_kind):
+                            continue
+                        # Normalize stored channel name and observed channel name
+                        en = entry.channel_name
+                        if isinstance(en, bytes):
+                            en_cmp = en
+                        elif en is None:
+                            en_cmp = b""
+                        else:
+                            en_cmp = str(en).encode("utf-8")
+                        if isinstance(channel_name, bytes):
+                            cn_cmp = channel_name
+                        else:
+                            cn_cmp = str(channel_name or "").encode("utf-8")
+                        if cn_cmp.startswith(b"#"):
+                            cn_cmp = cn_cmp[1:]
+                        if en_cmp.startswith(b"#"):
+                            en_cmp = en_cmp[1:]
+                        if en_cmp.lower() != cn_cmp.lower():
+                            continue
+                        if not entry.suppressed:
+                            queue_suppressed = True
+                        entry.suppressed = True
+                    except Exception:
+                        continue
+                if queue_suppressed:
+                    logger.info("Responses suppressed by traffic observed on channel (queue mode)")
 
         # Refactor to remove extra ifs, not a clean structure but avoids unnecessary token parsing
         parsed = parse_request_token_prefix(text)
@@ -124,7 +152,15 @@ class FirmwareCoordinator:
             except Exception:
                 pass
             if not self.coordination_mode_queue:
-                suppressed = suppress_by_request_token(self.pending, token)
+                # Only suppress pending responses that match both the token and
+                # the observed channel (if provided). This avoids cross-channel
+                # suppression for identical tokens on different channels.
+                suppressed = suppress_by_request_token(
+                    self.pending,
+                    token,
+                    channel_kind=channel_kind,
+                    channel_name=channel_name,
+                )
                 if suppressed:
                     logger.debug("[TOKEN] Peer token [%04x] suppressed %d pending response(s)", token, sum(1 for e in self.pending if e.suppressed), extra={"log_color": "HIGHLIGHT"})
                 return suppressed
@@ -190,6 +226,10 @@ class FirmwareCoordinator:
         entry = PendingBotResponse(
             request_fingerprint=req_fp,
             response_fingerprint=resp_fp,
+            # Preserve channel information so observed-peer suppression can
+            # be restricted to the same channel when tokens are heard.
+            channel_kind=int(fp_input.get("channel_kind", 0)),
+            channel_name=fp_input.get("channel_name", ""),
             due_at_millis=(now_ms + delay_ms) & 0xFFFFFFFF,
             expires_at_millis=(now_ms + BOT_RESPONSE_PENDING_TTL_MILLIS) & 0xFFFFFFFF,
             active=True,

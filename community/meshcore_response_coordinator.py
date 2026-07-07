@@ -114,6 +114,10 @@ def response_due_at(
 class PendingBotResponse:
     request_fingerprint: int
     response_fingerprint: int
+    # Channel information captured at schedule time to allow observed-peer
+    # suppression to be restricted to the same channel.
+    channel_kind: int = 0
+    channel_name: str | bytes | None = None
     due_at_millis: int = 0
     expires_at_millis: int = 0
     active: bool = True
@@ -144,6 +148,9 @@ def suppress_by_response_fingerprint(
 def suppress_by_request_token(
     pending: MutableSequence[PendingBotResponse],
     request_token: int,
+    *,
+    channel_kind: int | None = None,
+    channel_name: str | bytes | None = None,
 ) -> bool:
     suppressed = False
     if request_token == 0:
@@ -152,9 +159,41 @@ def suppress_by_request_token(
     for entry in pending:
         if not entry.active or entry.request_fingerprint == 0:
             continue
-        if (int(entry.request_fingerprint) & 0xFFFF) == token16:
-            entry.suppressed = True
-            suppressed = True
+        if (int(entry.request_fingerprint) & 0xFFFF) != token16:
+            continue
+        # If caller provided channel constraints, only suppress when the
+        # pending entry was scheduled for the same channel.
+        if channel_kind is not None:
+            try:
+                if int(entry.channel_kind) != int(channel_kind):
+                    continue
+            except Exception:
+                continue
+        if channel_name is not None:
+            try:
+                # Normalize to bytes for comparison when possible
+                en = entry.channel_name
+                if isinstance(en, bytes):
+                    en_cmp = en
+                elif en is None:
+                    en_cmp = b""
+                else:
+                    en_cmp = str(en).encode("utf-8")
+                if isinstance(channel_name, bytes):
+                    cn_cmp = channel_name
+                else:
+                    cn_cmp = str(channel_name or "").encode("utf-8")
+                # Strip leading '#' if present (matches fingerprint logic)
+                if cn_cmp.startswith(b"#"):
+                    cn_cmp = cn_cmp[1:]
+                if en_cmp.startswith(b"#"):
+                    en_cmp = en_cmp[1:]
+                if en_cmp.lower() != cn_cmp.lower():
+                    continue
+            except Exception:
+                continue
+        entry.suppressed = True
+        suppressed = True
     return suppressed
 
 
