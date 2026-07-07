@@ -120,6 +120,9 @@ class WxCommand(BaseCommand):
             # Get database manager for geocoding cache
             self.db_manager = bot.db_manager
 
+            # In-memory cache: (lat_rounded, lon_rounded) -> city name string
+            self._coord_city_cache: dict = {}
+
             # Create a retry-enabled session for NOAA API calls
             # This makes the API more resilient to timeouts and transient errors
             self.noaa_session = self._create_retry_session()
@@ -834,18 +837,19 @@ class WxCommand(BaseCommand):
                 if city:
                     location_prefix = f"{city[:_MAX_CITY_CHARS]}: "
             elif location_type == "city" and address_info:
-                # Compare states (handle both full names and abbreviations)
-                states_different = (actual_state != self.default_state and
-                                  actual_state != default_state_full)
-                # Always show location if using companion location, or if state is different
-                if using_companion_location or states_different:
-                    location_prefix = f"{actual_city[:_MAX_CITY_CHARS]}: "
-            elif location_type == "zipcode" and using_companion_location:
-                # For zipcode with companion location, try to get city name from reverse geocoding
-                location_str = self._coordinates_to_location_string(lat, lon)
-                if location_str:
-                    city = location_str.split(',', 1)[0].strip()
-                    location_prefix = f"{city[:_MAX_CITY_CHARS]}: "
+                location_prefix = f"{actual_city[:_MAX_CITY_CHARS]}: "
+            elif location_type == "zipcode":
+                # Always show city name for zipcode lookups via reverse geocoding
+                cache_key = (round(lat, 4), round(lon, 4))
+                cached = self._coord_city_cache.get(cache_key)
+                if cached:
+                    location_prefix = f"{cached[:_MAX_CITY_CHARS]}: "
+                else:
+                    location_str = self._coordinates_to_location_string(lat, lon)
+                    if location_str:
+                        city = location_str.split(',', 1)[0].strip()
+                        self._coord_city_cache[cache_key] = city
+                        location_prefix = f"{city[:_MAX_CITY_CHARS]}: "
 
             # Get max message length dynamically, then reserve space for the location prefix
             # so all formatters pack the weather body into the remaining budget.
