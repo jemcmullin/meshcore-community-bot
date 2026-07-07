@@ -477,6 +477,23 @@ class WxCommand(BaseCommand):
             self.logger.debug(f"Error reverse geocoding coordinates {lat}, {lon}: {e}")
             return None
 
+    @staticmethod
+    def _relative_location_city(points_data: Optional[dict]) -> str:
+        """Extract city name from NOAA points relativeLocation metadata."""
+        if not points_data:
+            return ""
+
+        try:
+            return (
+                points_data.get('properties', {})
+                .get('relativeLocation', {})
+                .get('properties', {})
+                .get('city', '')
+                .strip()
+            )
+        except AttributeError:
+            return ""
+
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the weather command"""
         # Delegate to international command if using Open-Meteo provider
@@ -839,17 +856,12 @@ class WxCommand(BaseCommand):
             elif location_type == "city" and address_info:
                 location_prefix = f"{actual_city[:_MAX_CITY_CHARS]} "
             elif location_type == "zipcode":
-                # Always show city name for zipcode lookups via reverse geocoding
+                # Reuse cached city names when available; otherwise prefer NOAA relativeLocation
+                # once we have points data, then fall back to reverse geocoding.
                 cache_key = (round(lat, 4), round(lon, 4))
                 cached = self._coord_city_cache.get(cache_key)
                 if cached:
                     location_prefix = f"{cached[:_MAX_CITY_CHARS]} "
-                else:
-                    location_str = self._coordinates_to_location_string(lat, lon)
-                    if location_str:
-                        city = location_str.split(',', 1)[0].strip()
-                        self._coord_city_cache[cache_key] = city
-                        location_prefix = f"{city[:_MAX_CITY_CHARS]} "
 
             # Get max message length dynamically, then reserve space for the location prefix
             # so all formatters pack the weather body into the remaining budget.
@@ -880,6 +892,18 @@ class WxCommand(BaseCommand):
 
                 # Note: Current conditions are now integrated directly into the current period
                 # via _add_period_details() using observation station data
+
+            if location_type == "zipcode" and not location_prefix:
+                city = self._relative_location_city(points_data)
+                if not city:
+                    location_str = self._coordinates_to_location_string(lat, lon)
+                    if location_str:
+                        city = location_str.split(',', 1)[0].strip()
+
+                if city:
+                    cache_key = (round(lat, 4), round(lon, 4))
+                    self._coord_city_cache[cache_key] = city
+                    location_prefix = f"{city[:_MAX_CITY_CHARS]} "
 
             # Get weather alerts (only for default forecast type to avoid cluttering)
             if forecast_type == "default":

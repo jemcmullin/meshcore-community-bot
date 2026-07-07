@@ -407,7 +407,7 @@ class WxTafCommand(BaseCommand):
             if encoded:
                 taf_parts.append(encoded)
 
-        result = ' | '.join(taf_parts)
+        result = '\n'.join(taf_parts)
 
         await self.send_response(message, result)
         return True

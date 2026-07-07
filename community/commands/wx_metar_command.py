@@ -79,6 +79,23 @@ class WxMetarCommand(BaseCommand):
             return None
         return None
 
+    def _station_name(self, points: dict, lat: float, lon: float, raw_text: str) -> str:
+        try:
+            props = points.get('properties', {}).get('relativeLocation', {}).get('properties', {})
+            city = props.get('city') or props.get('name') or ''
+            if isinstance(city, dict):
+                city = city.get('name', '')
+            if city:
+                clean = re.sub(r'[^A-Za-z0-9]', '', city.split(',')[0]).upper()
+                if clean:
+                    return clean[:10]
+        except Exception:
+            pass
+        m = re.search(r'\b(\d{5})\b', raw_text)
+        if m:
+            return m.group(1)
+        return f"MESH{int(abs(lat * 100) % 1000):03d}"
+
     async def execute(self, message: MeshMessage) -> bool:
         content = message.content.strip()
         parts = content.split()
@@ -150,46 +167,7 @@ class WxMetarCommand(BaseCommand):
             obs = {}
 
         # Build a short, readable METAR-like output (no time, readable conditions)
-        # Station identifier: prefer city name from points if present
-        station = None
-        try:
-            rel = points.get('relativeLocation', {}) if points else None
-            if rel:
-                props = rel.get('properties', {})
-                station = props.get('city', {}).get('name') if props else None
-        except Exception:
-            station = None
-        if not station:
-            try:
-                station = self._wx._coordinates_to_location_string(lat, lon) if self._wx else None
-            except Exception:
-                station = None
-        # Produce station display: prefer city name (no state), else zipcode if present, max 7 chars
-        def make_station_display(city_name: Optional[str], message_text: str) -> str:
-            # Prefer city name, strip state if present (split on comma)
-            if city_name:
-                try:
-                    base = city_name.split(',')[0].strip()
-                    # keep letters and digits only, remove spaces and punctuation
-                    s = re.sub(r'[^A-Za-z0-9]', '', base).upper()
-                    if s:
-                        return s[:12]
-                except Exception:
-                    pass
-            # Fallback: look for a 5-digit zipcode in the message text
-            try:
-                m = re.search(r'\b(\d{5})\b', message_text)
-                if m:
-                    return m.group(1)[:12]
-            except Exception:
-                pass
-            # Final fallback: compact mesh id based on coords
-            try:
-                return f"MESH{int(abs(lat*100)%1000):03d}"[:12]
-            except Exception:
-                return 'MESH'
-
-        station = make_station_display(station, content)
+        station = self._station_name(points or {}, lat, lon, content)
 
         # Time string handling temporarily disabled
         # time_str = ''
