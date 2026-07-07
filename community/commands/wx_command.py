@@ -762,11 +762,9 @@ class WxCommand(BaseCommand):
                 self.logger.info(f"Sleeping {sleep_time}s before sending alerts...")
                 await asyncio.sleep(sleep_time)
 
-                # Send alerts via send_channel_message to bypass coordinator
-                # (coordinated_var is already True, so it skips coordination and just sends)
-                self.logger.info(f"About to send alerts to channel: {message.channel or '#weather'}")
+                self.logger.info(f"About to send alerts")
                 self.logger.debug(f"Sending alerts: {alert_text[:100]}...")
-                result = await self.bot.command_manager.send_channel_message(message.channel or "#weather", alert_text)
+                result = await self.send_response(message, alert_text)
                 self.logger.info(f"Alert send result: {result}")
             elif forecast_type == "multiday":
                 # Use message splitting for multi-day forecasts
