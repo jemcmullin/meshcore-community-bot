@@ -458,38 +458,41 @@ class WxMetarCommand(BaseCommand):
 
         metar = ' '.join([p for p in parts_out if p])
 
-        # Remarks: include next-day items (short) when available
+        # Remarks: include next-period items (short) when available
         try:
             remarks_parts = []
-            if periods and len(periods) >= 3:
-                next_day = periods[1]
-                next_night = periods[2]
-                name = (next_day.get('name') or 'Next').upper()
-                h = next_day.get('temperature')
-                l = next_night.get('temperature')
-                if h is not None and l is not None:
+            if periods and len(periods) >= 2:
+                # Try to find a sensible pair: prefer a daytime/nighttime pair or just the next available period
+                period_to_use = None
+                temp_code = None
+                
+                # Look for a period with both isDaytime and isTodaysDaytime fields, or just use next period
+                for idx in range(1, min(4, len(periods))):  # Check next 2-3 periods
+                    p = periods[idx]
+                    if p and p.get('temperature') is not None:
+                        period_to_use = p
+                        break
+                
+                if period_to_use:
                     try:
-                        hnum = parse_temp_int(h)
-                        lnum = parse_temp_int(l)
-                        h_unit = normalize_temp_unit(next_day.get('temperatureUnit'), fallback=default_unit)
-                        l_unit = normalize_temp_unit(next_night.get('temperatureUnit'), fallback=h_unit)
-                        if hnum is not None and lnum is not None:
-                            if h_unit == l_unit:
-                                remarks_parts.append(f"{name} H{hnum} L{lnum}{h_unit}")
-                            else:
-                                remarks_parts.append(f"{name} H{hnum}{h_unit} L{lnum}{l_unit}")
+                        ptemp = parse_temp_int(period_to_use.get('temperature'))
+                        pname = (period_to_use.get('name') or 'Next').upper()
+                        punit = normalize_temp_unit(period_to_use.get('temperatureUnit'), fallback=default_unit)
+                        
+                        if ptemp is not None:
+                            # Just report this one period's temp; don't assume day/night pairing
+                            remarks_parts.append(f"{pname} {ptemp}{punit}")
+                        
+                        # Include weather code if available
+                        sf = period_to_use.get('shortForecast', '')
+                        wx = to_wx_codes(sf)
+                        if wx:
+                            remarks_parts.append(wx)
                     except Exception:
                         pass
-                # include a short next-day weather code if we can
-                try:
-                    nf = next_day.get('shortForecast', '')
-                    nf_code = to_wx_codes(nf)
-                    if nf_code:
-                        remarks_parts.append(nf_code)
-                except Exception:
-                    pass
+            
             if remarks_parts:
-                metar = f"{metar} RMK {' '.join(remarks_parts)}"
+                metar = f"{metar} | {' '.join(remarks_parts)}"
         except Exception:
             pass
 

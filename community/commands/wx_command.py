@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-Weather command for the MeshCore Bot
-Provides weather information using zip codes and NOAA APIs
+Community override of the `wx` command.
+
+This is a full community implementation that replaces the upstream WxCommand.
+It is auto-discovered by the plugin loader and shadows the upstream command
+because it carries the same `name = "wx"` identifier.
 """
 
 import re
@@ -13,19 +16,19 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from ..models import MeshMessage
-from ..utils import (
+from modules.commands.base_command import BaseCommand
+from modules.models import MeshMessage
+from modules.utils import (
     format_temperature_high_low,
     geocode_city_sync,
     geocode_zipcode_sync,
     get_nominatim_geocoder,
     normalize_us_state,
 )
-from .base_command import BaseCommand
 
 # Import for delegation when using Open-Meteo provider
 try:
-    from .alternatives.wx_international import GlobalWxCommand
+    from modules.commands.alternatives.wx_international import GlobalWxCommand
     WX_INTERNATIONAL_AVAILABLE = True
 except ImportError:
     WX_INTERNATIONAL_AVAILABLE = False
@@ -33,13 +36,13 @@ except ImportError:
 
 # Import WXSIM parser for custom weather sources
 try:
-    from ..clients.wxsim_parser import WXSIMParser
+    from modules.clients.wxsim_parser import WXSIMParser
     WXSIM_PARSER_AVAILABLE = True
 except ImportError:
     WXSIM_PARSER_AVAILABLE = False
     WXSIMParser = None
 
-from ..clients.mqtt_weather import (
+from modules.clients.mqtt_weather import (
     get_mqtt_weather_topic,
     load_mqtt_weather_format_config,
     mqtt_weather_display_for_topic,
@@ -444,7 +447,7 @@ class WxCommand(BaseCommand):
             Optional[str]: Location string (city name) or None if geocoding fails.
         """
         try:
-            from ..utils import rate_limited_nominatim_reverse_sync
+            from modules.utils import rate_limited_nominatim_reverse_sync
             result = rate_limited_nominatim_reverse_sync(self.bot, f"{lat}, {lon}", timeout=10)
             if result and hasattr(result, 'raw'):
                 # Extract city name from address
@@ -823,53 +826,51 @@ class WxCommand(BaseCommand):
                             default_state_full = self.default_state
 
             # Add location info if city is in a different state than default, or if using companion location
+            # City name is capped at 12 chars to limit prefix overhead.
+            _MAX_CITY_CHARS = 12
             location_prefix = ""
             if location_type == "coordinates" and address_info:
-                # For coordinates, always show location if we have address info
                 city = address_info.get('city', '')
-                state = address_info.get('state', '')
-                if city and state:
-                    # Normalize state to abbreviation
-                    state_abbr, _ = normalize_us_state(state)
-                    if state_abbr:
-                        state = state_abbr
-                    location_prefix = f"{city}, {state}: "
-                elif city:
-                    location_prefix = f"{city}: "
+                if city:
+                    location_prefix = f"{city[:_MAX_CITY_CHARS]}: "
             elif location_type == "city" and address_info:
                 # Compare states (handle both full names and abbreviations)
                 states_different = (actual_state != self.default_state and
                                   actual_state != default_state_full)
                 # Always show location if using companion location, or if state is different
                 if using_companion_location or states_different:
-                    location_prefix = f"{actual_city}, {actual_state}: " if actual_state else f"{actual_city}: "
+                    location_prefix = f"{actual_city[:_MAX_CITY_CHARS]}: "
             elif location_type == "zipcode" and using_companion_location:
                 # For zipcode with companion location, try to get city name from reverse geocoding
                 location_str = self._coordinates_to_location_string(lat, lon)
                 if location_str:
-                    location_prefix = f"{location_str}: "
+                    city = location_str.split(',', 1)[0].strip()
+                    location_prefix = f"{city[:_MAX_CITY_CHARS]}: "
 
-            # Get max message length dynamically
+            # Get max message length dynamically, then reserve space for the location prefix
+            # so all formatters pack the weather body into the remaining budget.
             max_length = self.get_max_message_length(message) if message else 130
+            prefix_width = len(location_prefix.encode('utf-8'))
+            weather_max_length = max(40, max_length - prefix_width)
 
             # Get weather forecast based on type
             if forecast_type == "tomorrow":
-                forecast_periods, points_data = self.get_noaa_weather(lat, lon, return_periods=True, max_length=max_length)
+                forecast_periods, points_data = self.get_noaa_weather(lat, lon, return_periods=True, max_length=weather_max_length)
                 if forecast_periods == self.ERROR_FETCHING_DATA:
                     return self.translate('commands.wx.error_fetching')
-                weather = self.format_tomorrow_forecast(forecast_periods, max_length=max_length)
+                weather = self.format_tomorrow_forecast(forecast_periods, max_length=weather_max_length)
             elif forecast_type == "multiday":
-                forecast_periods, points_data = self.get_noaa_weather(lat, lon, return_periods=True, max_length=max_length)
+                forecast_periods, points_data = self.get_noaa_weather(lat, lon, return_periods=True, max_length=weather_max_length)
                 if forecast_periods == self.ERROR_FETCHING_DATA:
                     return self.translate('commands.wx.error_fetching')
-                weather = self.format_multiday_forecast(forecast_periods, num_days, max_length=max_length)
+                weather = self.format_multiday_forecast(forecast_periods, num_days, max_length=weather_max_length)
             elif forecast_type == "hourly":
                 hourly_periods, points_data = self.get_noaa_hourly_weather(lat, lon)
                 if hourly_periods == self.ERROR_FETCHING_DATA:
                     return self.translate('commands.wx.error_fetching')
-                weather = self.format_hourly_forecast(hourly_periods, max_length=max_length)
+                weather = self.format_hourly_forecast(hourly_periods, max_length=weather_max_length)
             else:  # default
-                weather, points_data = self.get_noaa_weather(lat, lon, max_length=max_length)
+                weather, points_data = self.get_noaa_weather(lat, lon, max_length=weather_max_length)
                 if weather == self.ERROR_FETCHING_DATA:
                     return self.translate('commands.wx.error_fetching')
 
@@ -3550,6 +3551,36 @@ class WxCommand(BaseCommand):
                 pass
         return self.abbreviate_noaa(name)
 
+    # Qualifier phrases stripped from forecast summaries for brevity.
+    # Emoji carries the intensity/probability context instead.
+    _FORECAST_QUALIFIERS = (
+        "slight chance of ",
+        "slight chance ",
+        "chance of ",
+        "areas of ",
+        "patchy ",
+        "mostly ",
+        "partly ",
+        "a few ",
+        "scattered ",
+        "isolated ",
+        "numerous ",
+        "widespread ",
+        "likely ",
+    )
+
+    def _strip_forecast_qualifiers(self, text: str) -> str:
+        """Remove leading qualifier words from a forecast phrase, capitalising the result."""
+        if not text:
+            return text
+        lower = text.lower()
+        for q in self._FORECAST_QUALIFIERS:
+            if lower.startswith(q):
+                text = text[len(q):]
+                lower = text.lower()
+        # Re-capitalise first letter
+        return text[:1].upper() + text[1:] if text else text
+
     def abbreviate_noaa(self, text: str) -> str:
         """Replace long strings with shorter ones for display"""
         replacements = {
@@ -3569,7 +3600,7 @@ class WxCommand(BaseCommand):
             "east": "E",
             "west": "W",
             "precipitation": "precip",
-            "showers": "shwrs",
+            "showers": "showers",
             "thunderstorms": "storms",
             "thunderstorm": "storm",
             "quarters": "qtrs",
@@ -3594,7 +3625,7 @@ class WxCommand(BaseCommand):
             "temperature": "temp.",
         }
 
-        line = text
+        line = self._strip_forecast_qualifiers(text)
         for key, value in replacements.items():
             # Case insensitive replace
             line = line.replace(key, value).replace(key.capitalize(), value).replace(key.upper(), value)
