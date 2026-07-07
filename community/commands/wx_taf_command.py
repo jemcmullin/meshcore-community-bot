@@ -183,6 +183,21 @@ class WxTafCommand(BaseCommand):
             codes.append('DU')
         return (intensity + ''.join(codes)) if codes else ''
 
+    def _prob_field(self, period: dict, wx_codes: str) -> str:
+        if not wx_codes:
+            return ''
+        try:
+            pop = period.get('probabilityOfPrecipitation', {}).get('value')
+        except Exception:
+            return ''
+        if pop is None:
+            return ''
+        try:
+            pop_int = int(pop)
+        except Exception:
+            return ''
+        return f"PROB{pop_int}" if pop_int > 0 else ''
+
     def _temp_c(self, value, unit: str) -> Optional[int]:
         try:
             v = float(value)
@@ -263,14 +278,9 @@ class WxTafCommand(BaseCommand):
             prefix = 'M' if t_val < 0 else ''
             tokens.append(f"{prefix}{abs(t_val):02d}C")
 
-        # Precipitation probability
-        pop = None
-        try:
-            pop = period.get('probabilityOfPrecipitation', {}).get('value')
-        except Exception:
-            pass
-        if pop is not None and int(pop) > 0:
-            tokens.append(f"PROB{int(pop)}")
+        prob = self._prob_field(period, wx)
+        if prob:
+            tokens.append(prob)
 
         return ' '.join(tokens)
 
@@ -397,14 +407,9 @@ class WxTafCommand(BaseCommand):
             prefix = 'M' if t_val < 0 else ''
             current_tokens.append(f"{prefix}{abs(t_val):02d}C")
 
-        # Precipitation probability for current period
-        pop = None
-        try:
-            pop = current.get('probabilityOfPrecipitation', {}).get('value')
-        except Exception:
-            pass
-        if pop is not None and int(pop) > 0:
-            current_tokens.append(f"PROB{int(pop)}")
+        prob = self._prob_field(current, wx)
+        if prob:
+            current_tokens.append(prob)
 
         taf_parts = [station]
         if current_tokens:
