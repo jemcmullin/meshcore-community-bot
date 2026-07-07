@@ -1827,7 +1827,7 @@ class WxCommand(BaseCommand):
 
         # Add dew point if available and space allows
         if dew_point:
-            dew_str = f" Dp:{dew_point}"
+            dew_str = f" Dew:{dew_point}"
             if self._count_display_width(result + dew_str) + current_weather_length <= max_length:
                 result += dew_str
                 current_weather_length + self._count_display_width(result)
@@ -3502,7 +3502,7 @@ class WxCommand(BaseCommand):
             conditions.append(f"{obs_data['humidity']}%RH")
 
         if 'dew_point' in obs_data:
-            conditions.append(f"Dp:{obs_data['dew_point']}")
+            conditions.append(f"Dew:{obs_data['dew_point']}")
 
         if 'visibility' in obs_data:
             conditions.append(f"Vis:{obs_data['visibility']}mi")
