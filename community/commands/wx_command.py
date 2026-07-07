@@ -287,7 +287,7 @@ class WxCommand(BaseCommand):
             except Exception:
                 pop = None
         if pop:
-            tokens.append(f"Prob {int(pop)}%")
+            tokens.append(f"Precip{int(pop)}%")
 
         # Pressure (use observation pressure in hPa -> mb)
         pressure = obs.get('pressure') or (self._wx.extract_pressure(detailed) if hasattr(self._wx, 'extract_pressure') else None)
@@ -297,16 +297,19 @@ class WxCommand(BaseCommand):
 
         # Tonight/Day summary: try to attach next period's high/low
         day_summary = ''
-        # If current period is a night/overnight, include its low temperature if available
-        if is_night:
-            cur_temp = current.get('temperature')
-            if cur_temp is not None:
-                cur_unit = (current.get('temperatureUnit') or 'F').upper()
-                cur_unit_token = cur_unit.replace('°', '')
-                try:
-                    tokens.append(f"L:{int(round(float(cur_temp)))}{cur_unit_token}")
-                except Exception:
-                    pass
+        # Prepare temperature token (show immediately after narrative)
+        temp_token = None
+        cur_temp = current.get('temperature')
+        if cur_temp is not None:
+            cur_unit = (current.get('temperatureUnit') or 'F').upper()
+            cur_unit_token = cur_unit.replace('°', '')
+            try:
+                if is_night:
+                    temp_token = f"T:{int(round(float(cur_temp)))}{cur_unit_token}"
+                else:
+                    temp_token = f"T:{int(round(float(cur_temp)))}{cur_unit_token}"
+            except Exception:
+                temp_token = None
         if len(periods) > 1:
             nextp = periods[1]
             # prefer extract_high_low from detailed forecast
@@ -323,8 +326,10 @@ class WxCommand(BaseCommand):
                 day_name = self._wx._noaa_period_display_name(nextp)
                 day_summary = f"| {day_name}: {self._wx.abbreviate_noaa(nextp.get('shortForecast',''))} {hl}"
 
-        # Assemble final message
+        # Assemble final message (insert temperature token immediately after narrative)
         head = f"{location_name} {period_label}: {narrative}."
+        if temp_token:
+            head = f"{head} {temp_token}"
         rest = ' '.join(tokens)
         if rest:
             out = f"{head} {rest}"
