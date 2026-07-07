@@ -49,6 +49,9 @@ class WxMetarCommand(BaseCommand):
     usage = "wxmetar <zipcode|lat,lon|city>"
     examples = ["wxmetar 98101", "wxmetar 47.6,-122.3"]
 
+    # Internal toggle: keep METAR default in Celsius unless explicitly set to use bot config.
+    USE_BOT_CONFIG_TEMP_UNIT = False
+
     def __init__(self, bot):
         super().__init__(bot)
         self.enabled = self.get_config_value('WxMetar_Command', 'enabled', fallback=True, value_type='bool')
@@ -204,49 +207,76 @@ class WxMetarCommand(BaseCommand):
         # except Exception:
         #     time_str = ''
 
-        # Wind: present as readable with METAR knot primary and configured unit in parens
-        wind_dir = obs.get('wind_direction') or obs.get('wind_dir') or obs.get('wind_bearing')
-        wind_speed = obs.get('wind_speed') or obs.get('wind_mph') or obs.get('wind_kph') or 0
-        try:
-            wind_speed = float(wind_speed)
-        except Exception:
-            wind_speed = 0.0
-        # prefer knots for METAR primary display
-        wind_kts = int(round(wind_speed * 0.868976)) if wind_speed else 0
-        wind_dir_int = 0
-        try:
-            wind_dir_int = int(round(float(wind_dir))) if wind_dir is not None else 0
-        except Exception:
-            wind_dir_int = 0
-        # configured wind unit (mph/kph/kt)
-        cfg_wind_unit = self.bot.config.get('Weather', 'wind_speed_unit', fallback='mph').lower()
-        wind_secondary = ''
-        try:
-            if cfg_wind_unit == 'mph':
-                wind_secondary = f"{int(round(wind_kts / 0.868976)):d}mph" if wind_kts else ''
-            elif cfg_wind_unit in ('kph', 'kmh'):
-                wind_secondary = f"{int(round(wind_kts * 1.852)):d}kph" if wind_kts else ''
-            elif cfg_wind_unit in ('kt', 'kts', 'knots'):
-                wind_secondary = ''
-        except Exception:
-            wind_secondary = ''
-        # METAR wind format: DDDSSKT or VRBSSKT; include gusts if present
-        gust = obs.get('wind_gust') or obs.get('wind_gust_mph') or obs.get('wind_gust_kph')
-        try:
-            gust = int(round(float(gust))) if gust is not None else None
-        except Exception:
-            gust = None
+        # Wind: prefer station observation fields, then fall back to first forecast period.
+        period0 = periods[0] if periods and len(periods) > 0 else {}
+        wind_dir = (
+            obs.get('wind_direction') or obs.get('wind_dir') or obs.get('wind_bearing')
+            or period0.get('windDirection')
+        )
+        wind_speed_raw = (
+            obs.get('wind_speed') or obs.get('wind_mph') or obs.get('wind_kph')
+            or period0.get('windSpeed') or 0
+        )
+
+        def parse_speed_to_kts(value) -> int:
+            if value is None:
+                return 0
+            try:
+                # Bare numerics are treated as mph to match upstream observation parsing.
+                if isinstance(value, (int, float)):
+                    return int(round(float(value) * 0.868976))
+                s = str(value).strip().lower()
+                m = re.search(r'-?\d+(?:\.\d+)?', s)
+                if not m:
+                    return 0
+                v = float(m.group(0))
+                if 'kt' in s or 'knot' in s:
+                    factor = 1.0
+                elif 'km/h' in s or 'kph' in s or ('km' in s and '/h' in s):
+                    factor = 0.539957
+                elif 'm/s' in s or 'mps' in s:
+                    factor = 1.94384
+                else:
+                    factor = 0.868976  # mph
+                return int(round(v * factor))
+            except Exception:
+                return 0
+
+        def parse_wind_dir_degrees(value) -> Optional[int]:
+            if value is None:
+                return None
+            try:
+                return int(round(float(value))) % 360
+            except Exception:
+                pass
+            s = str(value).strip().upper()
+            dirs = {
+                'N': 0, 'NNE': 22, 'NE': 45, 'ENE': 67,
+                'E': 90, 'ESE': 112, 'SE': 135, 'SSE': 157,
+                'S': 180, 'SSW': 202, 'SW': 225, 'WSW': 247,
+                'W': 270, 'WNW': 292, 'NW': 315, 'NNW': 337,
+            }
+            for token in s.replace('-', ' ').split():
+                if token in dirs:
+                    return dirs[token]
+            return None
+
+        wind_kts = parse_speed_to_kts(wind_speed_raw)
+        wind_dir_int = parse_wind_dir_degrees(wind_dir)
+
+        # METAR wind format: DDDSSKT or VRBSSKT; include gusts if present.
+        gust_raw = (
+            obs.get('wind_gust') or obs.get('wind_gust_mph') or obs.get('wind_gust_kph')
+            or obs.get('wind_gusts') or period0.get('windGust')
+        )
+        gust_kts = parse_speed_to_kts(gust_raw)
         if wind_kts == 0:
-            wind_field = '00000KT'
+            wind_field = 'CALM'
         else:
-            dir_part = 'VRB' if wind_dir is None or str(wind_dir).lower() == 'variable' else f"{wind_dir_int:03d}"
+            is_variable = wind_dir is None or 'variable' in str(wind_dir).lower() or 'vrb' in str(wind_dir).lower()
+            dir_part = 'VRB' if is_variable or wind_dir_int is None else f"{wind_dir_int:03d}"
             wind_field = f"{dir_part}{wind_kts:02d}KT"
-            if gust and gust > 0:
-                # convert gust to kt if input likely mph/kph
-                try:
-                    gust_kts = int(round(float(gust) * 0.868976))
-                except Exception:
-                    gust_kts = gust
+            if gust_kts > 0:
                 wind_field = f"{dir_part}{wind_kts:02d}G{gust_kts:02d}KT"
 
         # Temperature / Dew point: preserve source units and omit missing values.
@@ -282,8 +312,11 @@ class WxMetarCommand(BaseCommand):
                 return 'K'
             return fallback
 
-        cfg_temp_unit = self.bot.config.get('Weather', 'temperature_unit', fallback='fahrenheit').lower()
-        default_unit = 'C' if cfg_temp_unit.startswith('c') else 'F'
+        if self.USE_BOT_CONFIG_TEMP_UNIT:
+            cfg_temp_unit = self.bot.config.get('Weather', 'temperature_unit', fallback='fahrenheit').lower()
+            default_unit = 'C' if cfg_temp_unit.startswith('c') else 'F'
+        else:
+            default_unit = 'C'
 
         t_val = parse_temp_int(temp)
         if t_val is None:
