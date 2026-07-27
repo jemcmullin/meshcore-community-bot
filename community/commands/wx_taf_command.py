@@ -43,6 +43,9 @@ class WxTafCommand(BaseCommand):
     usage = "taf <zipcode|lat,lon|city>"
     examples = ["taf 80202", "taf 39.7,-104.9", "taf Denver"]
 
+    # Use bot config temperature unit (Fahrenheit/Celsius) for TAF output
+    USE_BOT_CONFIG_TEMP_UNIT = True
+
     def __init__(self, bot):
         super().__init__(bot)
         self.enabled = self.get_config_value('WxTaf_Command', 'enabled', fallback=True, value_type='bool')
@@ -201,15 +204,63 @@ class WxTafCommand(BaseCommand):
             return ''
         return f"PROB{pop_int}" if pop_int > 0 else ''
 
-    def _temp_c(self, value, unit: str) -> Optional[int]:
+    @staticmethod
+    def _normalize_temp_unit(unit: Optional[str], fallback: str = 'F') -> str:
+        """Normalize temperature unit string to F, C, or K."""
+        if not unit:
+            return fallback
+        u = str(unit).strip().upper()
+        if u.startswith('F'):
+            return 'F'
+        if u.startswith('C'):
+            return 'C'
+        if u.startswith('K'):
+            return 'K'
+        return fallback
+
+    @staticmethod
+    def _convert_temp_value(value: Optional[int], from_unit: str, to_unit: str) -> Optional[int]:
+        """Convert temperature between units."""
+        if value is None:
+            return None
+        fu = (from_unit or '').upper()
+        tu = (to_unit or '').upper()
+        if fu == tu:
+            return value
         try:
             v = float(value)
-            u = (unit or 'F').strip().upper()
-            if u.startswith('F'):
+            if fu == 'F' and tu == 'C':
                 return int(round((v - 32.0) * 5.0 / 9.0))
-            if u.startswith('K'):
+            if fu == 'C' and tu == 'F':
+                return int(round((v * 9.0 / 5.0) + 32.0))
+            if fu == 'K' and tu == 'C':
                 return int(round(v - 273.15))
-            return int(round(v))
+            if fu == 'C' and tu == 'K':
+                return int(round(v + 273.15))
+            if fu == 'F' and tu == 'K':
+                c = (v - 32.0) * 5.0 / 9.0
+                return int(round(c + 273.15))
+            if fu == 'K' and tu == 'F':
+                c = v - 273.15
+                return int(round((c * 9.0 / 5.0) + 32.0))
+        except Exception:
+            return value
+        return value
+
+    def _temp_c(self, value, unit: str) -> Optional[int]:
+        """Parse temperature value, converting to configured unit."""
+        try:
+            v = float(value)
+            u = self._normalize_temp_unit(unit, fallback='F')
+            
+            # Convert to configured output unit
+            if self.USE_BOT_CONFIG_TEMP_UNIT:
+                cfg_temp_unit = self.bot.config.get('Weather', 'temperature_unit', fallback='fahrenheit').lower()
+                target_unit = 'C' if cfg_temp_unit.startswith('c') else 'F'
+            else:
+                target_unit = 'C'
+            
+            return self._convert_temp_value(int(round(v)), u, target_unit)
         except Exception:
             return None
 
@@ -279,7 +330,13 @@ class WxTafCommand(BaseCommand):
         t_val = self._temp_c(period.get('temperature'), period.get('temperatureUnit', 'F'))
         if t_val is not None:
             prefix = 'M' if t_val < 0 else ''
-            tokens.append(f"{prefix}{abs(t_val):02d}C")
+            # Determine output unit based on config
+            if self.USE_BOT_CONFIG_TEMP_UNIT:
+                cfg_temp_unit = self.bot.config.get('Weather', 'temperature_unit', fallback='fahrenheit').lower()
+                unit_suffix = 'C' if cfg_temp_unit.startswith('c') else 'F'
+            else:
+                unit_suffix = 'C'
+            tokens.append(f"{prefix}{abs(t_val):02d}{unit_suffix}")
 
         prob = self._prob_field(period, wx)
         if prob:
@@ -408,7 +465,13 @@ class WxTafCommand(BaseCommand):
             current_tokens.append(cloud)
         if t_val is not None:
             prefix = 'M' if t_val < 0 else ''
-            current_tokens.append(f"{prefix}{abs(t_val):02d}C")
+            # Determine output unit based on config
+            if self.USE_BOT_CONFIG_TEMP_UNIT:
+                cfg_temp_unit = self.bot.config.get('Weather', 'temperature_unit', fallback='fahrenheit').lower()
+                unit_suffix = 'C' if cfg_temp_unit.startswith('c') else 'F'
+            else:
+                unit_suffix = 'C'
+            current_tokens.append(f"{prefix}{abs(t_val):02d}{unit_suffix}")
 
         prob = self._prob_field(current, wx)
         if prob:

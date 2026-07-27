@@ -56,6 +56,8 @@ def hop_delay_bias(channel_kind: BotChannelKind, path_hash_count: int, hop_step_
     if channel_kind == BotChannelKind.BOT_CHANNEL_DM:
         return 0
     hop = max(0, int(path_hash_count))
+    if hop <= 3:
+        return 0
     bias = hop * int(hop_step_millis) + hop * hop * BOT_HOP_GROW_MILLIS
     return min(bias, BOT_HOP_BIAS_MAX_MILLIS)
 

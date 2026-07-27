@@ -50,7 +50,7 @@ class WxMetarCommand(BaseCommand):
     examples = ["wxmetar 98101", "wxmetar 47.6,-122.3"]
 
     # Internal toggle: keep METAR default in Celsius unless explicitly set to use bot config.
-    USE_BOT_CONFIG_TEMP_UNIT = False
+    USE_BOT_CONFIG_TEMP_UNIT = True
 
     def __init__(self, bot):
         super().__init__(bot)
