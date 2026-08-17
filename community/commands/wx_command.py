@@ -1943,7 +1943,8 @@ class WxCommand(BaseCommand):
         # Add pressure if available and space allows
         if pressure:
             #pressure_str = f" P:{pressure}hPa"
-            pressure_str = self._pressure_label(pressure)
+            pressure_label = self._pressure_label(pressure)
+            pressure_str = f" P:{pressure_label}"
             if self._count_display_width(result + pressure_str) + current_weather_length <= max_length:
                 result += pressure_str
 
