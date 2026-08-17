@@ -32,6 +32,8 @@ class TestCommand(BaseCommand):
     usage = "test [phrase]"
     examples = ["test", "t hello world"]
 
+    SEND_2BYTE_TIP = True
+
     def __init__(self, bot):
         super().__init__(bot)
         self.test_enabled = self.get_config_value('Test_Command', 'enabled', fallback=True, value_type='bool')
@@ -846,6 +848,29 @@ class TestCommand(BaseCommand):
             self.logger.warning(f"Error formatting test response: {e}")
             return response_format
 
+    def _is_1byte_path_from_message(self, message: MeshMessage) -> bool:
+        """Check if message path uses 1-byte encoding.
+        
+        Reuses _build_path_hash_size() which returns "1" for 1-byte paths.
+        """
+        try:
+            path_hash_size = self._build_path_hash_size(message)
+            return path_hash_size == "1"
+        except Exception:
+            return False
+
+    async def _check_and_suggest_2byte_upgrade(self, message: MeshMessage) -> None:
+        """Send upgrade message if path was 1-byte encoded."""
+        try:
+            if self._is_1byte_path_from_message(message):
+                # Send follow-up message suggesting 2-byte upgrade
+                upgrade_msg = (
+                        "ColoradoMesh recommends: Settings > Path Hash 2-bytes"
+                    )
+                await self.send_response(message, upgrade_msg)
+        except Exception as e:
+            self.logger.debug(f"Error checking for 1-byte path upgrade: {e}")
+
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the test command.
 
@@ -860,4 +885,10 @@ class TestCommand(BaseCommand):
 
         # Store the current message for use in location lookups
         self._current_message = message
-        return await self.handle_keyword_match(message)
+        result = await self.handle_keyword_match(message)
+        
+        # After test command completes, check if path was 1-byte and send upgrade message
+        if result and self.SEND_2BYTE_TIP:
+            await self._check_and_suggest_2byte_upgrade(message)
+        
+        return result

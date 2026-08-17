@@ -19,6 +19,8 @@ class PathLowercaseCommand(BaseCommand):
     keywords = ["path", "p"]
     description = "Lowercase wrapper for the path command"
 
+    SEND_2BYTE_TIP = True
+
     def __init__(self, bot: Any) -> None:
         super().__init__(bot)
         # Instantiate the original PathCommand to reuse its logic
@@ -77,7 +79,13 @@ class PathLowercaseCommand(BaseCommand):
         self._wrapped.send_response_chunked = types.MethodType(_lower_send_chunked, self._wrapped)
 
         try:
-            return await self._wrapped.execute(message)
+            result = await self._wrapped.execute(message)
+            
+            # After path command completes, check if path was 1-byte and send upgrade message
+            if result and self.SEND_2BYTE_TIP:
+                await self._check_and_suggest_2byte_upgrade(message)
+            
+            return result
         finally:
             # Restore original methods
             try:
@@ -88,3 +96,45 @@ class PathLowercaseCommand(BaseCommand):
                 self._wrapped.send_response_chunked = orig_send_chunked
             except Exception:
                 pass
+
+    def _is_1byte_path(self, path_input: str) -> bool:
+        """Check if path input uses 1-byte (2-char hex) encoding.
+        
+        Returns True if path contains comma-separated 2-char hex values.
+        """
+        import re
+        
+        # Extract path data from input
+        path_input = re.sub(r'\s*\([^)]*hops?[^)]*\)', '', path_input, flags=re.IGNORECASE)
+        path_input = path_input.strip()
+        
+        if ',' in path_input:
+            tokens = [t.strip() for t in path_input.split(',') if t.strip()]
+            if tokens:
+                lengths = {len(t) for t in tokens}
+                # Check if all tokens are 2-char hex (1-byte encoding)
+                if len(lengths) == 1 and 2 in lengths:
+                    valid_hex = all(
+                        all(c in '0123456789aAbBcCdDeEfF' for c in t)
+                        for t in tokens
+                    )
+                    return valid_hex
+        return False
+
+    async def _check_and_suggest_2byte_upgrade(self, message) -> None:
+        """Send upgrade message if path was 1-byte encoded."""
+        try:
+            content = message.content.strip()
+            parts = content.split()
+            
+            if len(parts) >= 2:
+                path_input = " ".join(parts[1:])
+                
+                if self._is_1byte_path(path_input):
+                    # Send follow-up message suggesting 2-byte upgrade
+                    upgrade_msg = (
+                        "ColoradoMesh recommends: Settings > Path Hash 2-bytes"
+                    )
+                    await self.send_response(message, upgrade_msg)
+        except Exception as e:
+            self.logger.debug(f"Error checking for 1-byte path upgrade: {e}")
