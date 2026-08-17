@@ -1842,6 +1842,23 @@ class WxCommand(BaseCommand):
             self.logger.error(f"Error formatting {num_days}-day forecast: {e}")
             return self.translate('commands.wx.multiday_error', num_days=num_days)
 
+    def _pressure_label(self, input) -> str:
+        try:
+            value = float(input)
+        except:
+            return "parse_error"
+        
+        if value > 1050:
+            return "Very High"
+        if value > 1020:
+            return "High"
+        if value > 1010:
+            return "Avg"
+        if value > 990:
+            return "Low"
+        return "Very Low"
+
+
     def _add_period_details(self, period_str: str, detailed_forecast: str, current_weather_length: int, max_length: int = 130, observation_data: dict = None) -> str:
         """Add additional details (humidity, dew point, visibility, etc.) to a period string
 
@@ -1925,7 +1942,8 @@ class WxCommand(BaseCommand):
 
         # Add pressure if available and space allows
         if pressure:
-            pressure_str = f" P:{pressure}hPa"
+            #pressure_str = f" P:{pressure}hPa"
+            pressure_str = self._pressure_label(pressure)
             if self._count_display_width(result + pressure_str) + current_weather_length <= max_length:
                 result += pressure_str
 
@@ -3586,7 +3604,8 @@ class WxCommand(BaseCommand):
             conditions.append(f"Vis:{obs_data['visibility']}mi")
 
         if 'pressure' in obs_data:
-            conditions.append(f"P:{obs_data['pressure']}hPa")
+            press_label = self._pressure_label(obs_data['pressure'])
+            conditions.append(f"P:{press_label}")
 
         return " ".join(conditions[:3])  # Limit to 3 conditions to avoid overflow
 
