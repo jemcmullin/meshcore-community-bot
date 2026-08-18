@@ -82,7 +82,7 @@ class PathLowercaseCommand(BaseCommand):
             result = await self._wrapped.execute(message)
             
             # After path command completes, check if path was 1-byte and send upgrade message
-            if result and self.SEND_2BYTE_TIP:
+            if self.SEND_2BYTE_TIP:
                 await self._check_and_suggest_2byte_upgrade(message)
             
             return result
