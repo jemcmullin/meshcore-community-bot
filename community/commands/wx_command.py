@@ -136,6 +136,11 @@ class WxCommand(BaseCommand):
         u = (period.get("temperatureUnit") or "F").upper()
         return "°F" if u == "F" else "°C"
 
+    @staticmethod
+    def _noaa_period_is_night(period: dict) -> bool:
+        name = (period.get("name") or "").lower()
+        return any(word in name for word in ["tonight", "overnight", "night"])
+
     def _create_retry_session(self) -> requests.Session:
         """Create a requests session with retry logic for NOAA API calls"""
         session = requests.Session()
@@ -388,9 +393,10 @@ class WxCommand(BaseCommand):
                 high = self.wxsim_parser._convert_temp(tomorrow.high_temp, temp_unit) if tomorrow.high_temp else None
                 low = self.wxsim_parser._convert_temp(tomorrow.low_temp, temp_unit) if tomorrow.low_temp else None
                 temp_symbol = "°F" if temp_unit == 'fahrenheit' else "°C"
+                period_is_night = getattr(tomorrow.period_type, "value", "") == "night"
 
                 result = f"Tomorrow: {tomorrow.conditions}"
-                hl = self._format_high_low(high, low, temp_symbol)
+                hl = self._format_high_low(None, low if period_is_night else high, temp_symbol)
                 if hl:
                     result += f" {hl}"
 
@@ -1323,11 +1329,6 @@ class WxCommand(BaseCommand):
                 period_wind_direction = period.get('windDirection', '')
 
                 if period_temp and period_short:
-                    # Try to get high/low for tomorrow
-                    period_high_low = self.extract_high_low(
-                        period_detailed, self._noaa_period_temp_symbol(period)
-                    )
-
                     # Abbreviate forecast text if it's too long (especially when current is a night period)
                     abbreviated_forecast = period_short
                     if (is_current_tonight or is_current_night) and len(period_short) > 20:
@@ -1366,10 +1367,7 @@ class WxCommand(BaseCommand):
                                 abbreviated_forecast = ' '.join(meaningful_words)
 
                     period_emoji = self.get_weather_emoji(_ps_raw)  # use raw for accurate emoji
-                    if period_high_low:
-                        period_str = f" | {period_name}: {period_emoji}{abbreviated_forecast} {period_high_low}"
-                    else:
-                        period_str = f" | {period_name}: {period_emoji}{abbreviated_forecast} {period_temp}°"
+                    period_str = f" | {period_name}: {period_emoji}{abbreviated_forecast} {period_temp}°"
 
                     # Add wind info if space allows (using display width)
                     # Be more aggressive about adding wind when current is a night period
@@ -1675,9 +1673,6 @@ class WxCommand(BaseCommand):
                 temp_unit = period.get('temperatureUnit', 'F')
                 _sf_raw = period.get('shortForecast', '')
                 short_forecast = self._clean_forecast_wording(_sf_raw)
-                detailed_forecast = self._apply_forecast_text_replacements(
-                    period.get('detailedForecast', '')
-                )
                 wind_speed = period.get('windSpeed', '')
                 wind_direction = period.get('windDirection', '')
 
@@ -1696,13 +1691,6 @@ class WxCommand(BaseCommand):
                         wind_dir = self.abbreviate_wind_direction(wind_direction)
                         if wind_dir:
                             period_str += f" {wind_dir}@{wind_num}"
-
-                # Try to extract high/low
-                high_low = self.extract_high_low(
-                    detailed_forecast, self._noaa_period_temp_symbol(period)
-                )
-                if high_low and '°' not in period_str.split()[-1]:  # Avoid duplicate temp
-                    period_str = period_str.replace(f" {temp}°{temp_unit}", f" {high_low}")
 
                 parts.append(period_str)
 
@@ -3512,6 +3500,30 @@ class WxCommand(BaseCommand):
 
         return ""
 
+    def _convert_observation_speed_to_mph(self, value: Optional[float], unit_code: str = "") -> Optional[int]:
+        """Convert NOAA observation speed values to mph using the provided unit code."""
+        if value is None:
+            return None
+
+        try:
+            speed_value = float(value)
+        except (TypeError, ValueError):
+            return None
+
+        normalized_unit = (unit_code or "").strip().lower()
+
+        # NOAA observations default to m/s, but station feeds can report other units.
+        if "km_h-1" in normalized_unit or "km/h" in normalized_unit or "kph" in normalized_unit:
+            mph = speed_value * 0.621371
+        elif "knot" in normalized_unit or normalized_unit.endswith(":kn"):
+            mph = speed_value * 1.15078
+        elif "mi_h-1" in normalized_unit or "mph" in normalized_unit:
+            mph = speed_value
+        else:
+            mph = speed_value * 2.23694
+
+        return int(round(mph))
+
     def get_observation_data(self, points_data: dict) -> dict:
         """Get observation station data from NOAA and return as a dict
 
@@ -3578,10 +3590,14 @@ class WxCommand(BaseCommand):
                 if visibility > 0:
                     obs_data_dict['visibility'] = str(visibility)
 
-            wind_gust_val = props.get('windGust', {}).get('value')
+            wind_gust_props = props.get('windGust', {})
+            wind_gust_val = wind_gust_props.get('value')
             if wind_gust_val is not None:
-                wind_gust = int(wind_gust_val * 2.237)  # Convert m/s to mph
-                if wind_gust > 10:
+                wind_gust = self._convert_observation_speed_to_mph(
+                    wind_gust_val,
+                    wind_gust_props.get('unitCode', ''),
+                )
+                if wind_gust and wind_gust > 10:
                     obs_data_dict['wind_gusts'] = str(wind_gust)
 
             pressure_val = props.get('barometricPressure', {}).get('value')
@@ -3640,7 +3656,7 @@ class WxCommand(BaseCommand):
             return "⛅"
         elif any(word in condition_lower for word in ['rain', 'showers']):
             return "🌧️"
-        elif any(word in condition_lower for word in ['thunderstorm', 'thunderstorms']):
+        elif any(word in condition_lower for word in ['thunderstorm', 'thunderstorms', 'storms']):
             return "⛈️"
         elif any(word in condition_lower for word in ['snow', 'snow showers']):
             return "❄️"
@@ -3685,19 +3701,19 @@ class WxCommand(BaseCommand):
     # Qualifier phrases stripped from forecast summaries for brevity.
     # Emoji carries the intensity/probability context instead.
     _FORECAST_QUALIFIERS = (
-        "slight chance of ",
-        "slight chance ",
-        "chance of ",
-        "areas of ",
-        "patchy ",
-        "mostly ",
-        "partly ",
-        "a few ",
-        "scattered ",
-        "isolated ",
-        "numerous ",
-        "widespread ",
-        "likely ",
+        "Slight Chance Of ",
+        "Slight Chance ",
+        "Chance Of ",
+        "Areas Of ",
+        "Patchy ",
+        "Mostly ",
+        "Partly ",
+        "A Few ",
+        "Scattered ",
+        "Isolated ",
+        "Numerous ",
+        "Widespread ",
+        "Likely ",
     )
 
     # Phrase-level replacements applied before generic word abbreviation.
@@ -3726,7 +3742,8 @@ class WxCommand(BaseCommand):
         text = self._apply_forecast_text_replacements(text)
         lower = text.lower()
         for q in self._FORECAST_QUALIFIERS:
-            if lower.startswith(q):
+            q_lower = q.lower()
+            if lower.startswith(q_lower):
                 text = text[len(q):]
                 lower = text.lower()
         # Re-capitalise first letter
