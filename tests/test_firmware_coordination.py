@@ -380,6 +380,27 @@ def test_interceptor_schedules_unprefixed_response_but_sends_prefixed(monkeypatc
     assert harness.firmware.mark_calls[0][0].sent is True
 
 
+def test_interceptor_bypass_coordination_sends_immediately_without_prefix(monkeypatch):
+    harness = _build_interceptor_harness(monkeypatch)
+    message = _build_message("HOWL: !test")
+    token = raw_text_var.set("HOWL: !test")
+    try:
+        result = asyncio.run(
+            harness.bot.command_manager.send_response(
+                message,
+                "ColoradoMesh recommends: Settings > Path Hash 2-bytes",
+                bypass_coordination=True,
+            )
+        )
+    finally:
+        raw_text_var.reset(token)
+
+    assert result is True
+    assert harness.sent_payloads == ["ColoradoMesh recommends: Settings > Path Hash 2-bytes"]
+    assert harness.firmware.schedule_calls == []
+    assert harness.firmware.mark_calls == []
+
+
 def test_interceptor_suppresses_pending_response_when_peer_token_arrives(monkeypatch):
     harness = _build_interceptor_harness(monkeypatch)
     event = SimpleNamespace(payload={"text": "HOWL: !ping"})

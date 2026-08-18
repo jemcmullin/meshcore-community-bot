@@ -135,6 +135,13 @@ class PathLowercaseCommand(BaseCommand):
                     upgrade_msg = (
                         "ColoradoMesh recommends: Settings > Path Hash 2-bytes"
                     )
-                    await self.send_response(message, upgrade_msg)
+                    if hasattr(self.bot, 'message_interceptor'):
+                        await self.bot.command_manager.send_response(
+                            message,
+                            upgrade_msg,
+                            bypass_coordination=True,
+                        )
+                    else:
+                        await self.send_response(message, upgrade_msg)
         except Exception as e:
             self.logger.debug(f"Error checking for 1-byte path upgrade: {e}")

@@ -229,6 +229,27 @@ class MessageInterceptor:
     
     async def _coordinated_send_channel_message(self, channel, content, *args, **kwargs):
         """Coordinate keyword-triggered channel messages (no inbound MeshMessage in signature)."""
+        bypass_coordination = bool(
+            kwargs.pop("bypass_coordination", False)
+            or kwargs.pop("skip_coordination", False)
+            or kwargs.pop("bypass_corrdination", False)
+            or kwargs.pop("skip_corrdination", False)
+        )
+        if bypass_coordination:
+            logger.debug(
+                "Bypassing firmware coordination for send_channel_message (channel=%s payload=%r)",
+                channel,
+                content,
+            )
+            if self._debug_no_send:
+                logger.debug(
+                    "DEBUG_NO_SEND: skipped bypassed channel send (channel=%s payload=%r)",
+                    channel,
+                    content,
+                )
+                return True
+            return await self._original_send_channel_message(channel, content, *args, **kwargs)
+
         if coordinated_var.get():
             # Already coordinated by _coordinated_send_response for this message — just send.
             if self._debug_no_send:
@@ -270,6 +291,27 @@ class MessageInterceptor:
 
     async def _coordinated_send_response(self, message, content: str, *args, **kwargs) -> bool:
         """Coordinate command responses via firmware timing protocol."""
+        bypass_coordination = bool(
+            kwargs.pop("bypass_coordination", False)
+            or kwargs.pop("skip_coordination", False)
+            or kwargs.pop("bypass_corrdination", False)
+            or kwargs.pop("skip_corrdination", False)
+        )
+
+        if bypass_coordination:
+            logger.debug(
+                "Bypassing firmware coordination for send_response (sender=%s payload=%r)",
+                message.sender_id,
+                content,
+            )
+            coordinated_var.set(True)  # prevent inner send_channel_message from coordinating
+            if self._debug_no_send:
+                logger.debug("DEBUG_NO_SEND: skipped bypassed response (sender=%s payload=%r)", message.sender_id, content)
+                return True
+            result = await self._original_send_response(message, content, *args, **kwargs)
+            await self._discord_forward_response(message, content)
+            return result
+
         # DMs bypass coordination — only this bot received the DM.
         if message.is_dm:
             if self._debug_no_send:

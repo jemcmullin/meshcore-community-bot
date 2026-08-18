@@ -867,7 +867,14 @@ class TestCommand(BaseCommand):
                 upgrade_msg = (
                         "ColoradoMesh recommends: Settings > Path Hash 2-bytes"
                     )
-                await self.send_response(message, upgrade_msg)
+                if hasattr(self.bot, 'message_interceptor'):
+                    await self.bot.command_manager.send_response(
+                        message,
+                        upgrade_msg,
+                        bypass_coordination=True,
+                    )
+                else:
+                    await self.send_response(message, upgrade_msg)
         except Exception as e:
             self.logger.debug(f"Error checking for 1-byte path upgrade: {e}")
 
@@ -888,7 +895,7 @@ class TestCommand(BaseCommand):
         result = await self.handle_keyword_match(message)
         
         # After test command completes, check if path was 1-byte and send upgrade message
-        if result and self.SEND_2BYTE_TIP:
+        if self.SEND_2BYTE_TIP:
             await self._check_and_suggest_2byte_upgrade(message)
         
         return result
