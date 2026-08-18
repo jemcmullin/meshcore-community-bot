@@ -1068,10 +1068,12 @@ class WxCommand(BaseCommand):
             temp = current.get('temperature', 'N/A')
             temp_unit = current.get('temperatureUnit', 'F')
             _sf_raw = current.get('shortForecast', 'Unknown')
-            short_forecast = self._strip_forecast_qualifiers(_sf_raw)
+            short_forecast = self._clean_forecast_wording(_sf_raw)
             wind_speed = current.get('windSpeed', '')
             wind_direction = current.get('windDirection', '')
-            detailed_forecast = current.get('detailedForecast', '')
+            detailed_forecast = self._apply_forecast_text_replacements(
+                current.get('detailedForecast', '')
+            )
 
             # Extract additional useful info from detailed forecast
             self.extract_humidity(detailed_forecast)
@@ -1198,8 +1200,10 @@ class WxCommand(BaseCommand):
                 period_name = self._noaa_period_display_name(period)
                 period_temp = period.get('temperature', '')
                 _ps_raw = period.get('shortForecast', '')
-                period_short = self._strip_forecast_qualifiers(_ps_raw)
-                period_detailed = period.get('detailedForecast', '')
+                period_short = self._clean_forecast_wording(_ps_raw)
+                period_detailed = self._apply_forecast_text_replacements(
+                    period.get('detailedForecast', '')
+                )
                 period_wind_speed = period.get('windSpeed', '')
                 period_wind_direction = period.get('windDirection', '')
 
@@ -1259,8 +1263,10 @@ class WxCommand(BaseCommand):
                     period_name = self._noaa_period_display_name(period)
                     period_temp = period.get('temperature', '')
                     _ps_raw = period.get('shortForecast', '')
-                    period_short = self._strip_forecast_qualifiers(_ps_raw)
-                    period_detailed = period.get('detailedForecast', '')
+                    period_short = self._clean_forecast_wording(_ps_raw)
+                    period_detailed = self._apply_forecast_text_replacements(
+                        period.get('detailedForecast', '')
+                    )
                     period_wind_speed = period.get('windSpeed', '')
                     period_wind_direction = period.get('windDirection', '')
 
@@ -1309,8 +1315,10 @@ class WxCommand(BaseCommand):
                 period_name = self._noaa_period_display_name(period)
                 period_temp = period.get('temperature', '')
                 _ps_raw = period.get('shortForecast', '')
-                period_short = self._strip_forecast_qualifiers(_ps_raw)
-                period_detailed = period.get('detailedForecast', '')
+                period_short = self._clean_forecast_wording(_ps_raw)
+                period_detailed = self._apply_forecast_text_replacements(
+                    period.get('detailedForecast', '')
+                )
                 period_wind_speed = period.get('windSpeed', '')
                 period_wind_direction = period.get('windDirection', '')
 
@@ -1666,8 +1674,10 @@ class WxCommand(BaseCommand):
                 temp = period.get('temperature', '')
                 temp_unit = period.get('temperatureUnit', 'F')
                 _sf_raw = period.get('shortForecast', '')
-                short_forecast = self._strip_forecast_qualifiers(_sf_raw)
-                detailed_forecast = period.get('detailedForecast', '')
+                short_forecast = self._clean_forecast_wording(_sf_raw)
+                detailed_forecast = self._apply_forecast_text_replacements(
+                    period.get('detailedForecast', '')
+                )
                 wind_speed = period.get('windSpeed', '')
                 wind_direction = period.get('windDirection', '')
 
@@ -1746,7 +1756,9 @@ class WxCommand(BaseCommand):
 
                 # Get temperature (prefer high/low if available)
                 temp = period.get('temperature', '')
-                detailed_forecast = period.get('detailedForecast', '')
+                detailed_forecast = self._apply_forecast_text_replacements(
+                    period.get('detailedForecast', '')
+                )
                 high_low = self.extract_high_low(
                     detailed_forecast, self._noaa_period_temp_symbol(period)
                 )
@@ -3688,10 +3700,30 @@ class WxCommand(BaseCommand):
         "likely ",
     )
 
-    def _strip_forecast_qualifiers(self, text: str) -> str:
+    # Phrase-level replacements applied before generic word abbreviation.
+    # Keep this list ordered from most-specific to least-specific.
+    _FORECAST_TEXT_REPLACEMENTS = (
+        (re.compile(r"\bshowers\s+and\s+thunderstorms\b", re.IGNORECASE), "Storms"),
+    )
+
+    def _apply_forecast_text_replacements(self, text: str) -> str:
+        """Apply reusable phrase-level forecast text replacements."""
+        if not text:
+            return text
+
+        updated = text
+        for pattern, replacement in self._FORECAST_TEXT_REPLACEMENTS:
+            updated = pattern.sub(replacement, updated)
+
+        # Collapse spacing after replacements in case patterns removed words.
+        return re.sub(r"\s+", " ", updated).strip()
+
+    def _clean_forecast_wording(self, text: str) -> str:
         """Remove leading qualifier words from a forecast phrase, capitalising the result."""
         if not text:
             return text
+
+        text = self._apply_forecast_text_replacements(text)
         lower = text.lower()
         for q in self._FORECAST_QUALIFIERS:
             if lower.startswith(q):
@@ -3744,7 +3776,7 @@ class WxCommand(BaseCommand):
             "temperature": "temp.",
         }
 
-        line = self._strip_forecast_qualifiers(text)
+        line = self._clean_forecast_wording(text)
         for key, value in replacements.items():
             # Case insensitive replace
             line = line.replace(key, value).replace(key.capitalize(), value).replace(key.upper(), value)
