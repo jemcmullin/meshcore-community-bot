@@ -160,19 +160,35 @@ class WxTafCommand(BaseCommand):
             return 'OVC'
         return ''
 
-    def _wx_codes(self, s: str) -> str:
+    @staticmethod
+    def _precip_prob_greater_than_X(period: Optional[dict], threshold: float = 40.0) -> bool:
+        if period is None:
+            return True
+        try:
+            pop = period.get('probabilityOfPrecipitation', {}).get('value')
+        except Exception:
+            return True
+        if pop is None:
+            return True
+        try:
+            return float(pop) >= threshold
+        except Exception:
+            return True
+
+    def _wx_codes(self, s: str, period: Optional[dict] = None) -> str:
         if not s:
             return ''
         sl = s.lower()
         intensity = '+' if ('+' in sl or 'heavy' in sl) else ('-' if ('-' in sl or 'light' in sl) else '')
         codes = []
-        if 'thunder' in sl:
+        precip_threshold = self._precip_prob_greater_than_X(period)
+        if 'thunder' in sl and precip_threshold:
             codes.append('TS')
-        if 'rain' in sl:
+        if 'rain' in sl and precip_threshold:
             codes.append('RA')
-        if 'drizzle' in sl:
+        if 'drizzle' in sl and precip_threshold:
             codes.append('DZ')
-        if 'snow' in sl:
+        if 'snow' in sl and precip_threshold:
             codes.append('SN')
         if 'fog' in sl:
             codes.append('FG')
@@ -187,8 +203,7 @@ class WxTafCommand(BaseCommand):
         return (intensity + ''.join(codes)) if codes else ''
 
     def _prob_field(self, period: dict, wx_codes: str) -> str:
-        # only if TS, RA, SN in wx_codes
-        if not wx_codes or not any(c in wx_codes for c in ['TS', 'RA', 'SN']):
+        if not wx_codes or not any(c in wx_codes for c in ['TS', 'RA', 'SN', 'DZ']):
             return ''
         try:
             pop = period.get('probabilityOfPrecipitation', {}).get('value')
@@ -197,11 +212,12 @@ class WxTafCommand(BaseCommand):
         if pop is None:
             return ''
         try:
-            pop_int_raw = int(pop)
-            # nearest 10% for brevity
-            pop_int = int(round(pop_int_raw / 10.0) * 10)
+            pop_int_raw = int(float(pop))
         except Exception:
             return ''
+        if pop_int_raw < 40:
+            return ''
+        pop_int = int(round(pop_int_raw / 10.0) * 10)
         return f"PROB{pop_int}" if pop_int > 0 else ''
 
     @staticmethod
@@ -320,7 +336,7 @@ class WxTafCommand(BaseCommand):
                 tokens.append(wf)
 
         short = period.get('shortForecast', '')
-        wx = self._wx_codes(short)
+        wx = self._wx_codes(short, period)
         cloud = self._cloud_field(short)
         if wx:
             tokens.append(wx)
@@ -453,7 +469,7 @@ class WxTafCommand(BaseCommand):
             gust_raw=obs_gust_raw or current.get('windGust'),
         )
         short = current.get('shortForecast', '')
-        wx = self._wx_codes(short)
+        wx = self._wx_codes(short, current)
         cloud = self._cloud_field(short)
         t_val = self._temp_c(current.get('temperature'), current.get('temperatureUnit', 'F'))
 
