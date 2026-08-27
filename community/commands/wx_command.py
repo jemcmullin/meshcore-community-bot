@@ -909,6 +909,12 @@ class WxCommand(BaseCommand):
             # so all formatters pack the weather body into the remaining budget.
             max_length = self.get_max_message_length(message) if message else 130
             prefix_width = len(location_prefix.encode('utf-8'))
+            if location_type == "zipcode" and not location_prefix:
+                # ZIP lookups may discover and prepend the city after formatting.
+                prefix_width = _MAX_CITY_CHARS + 1
+            if message and not message.is_dm:
+                # Channel coordination may prepend "[xxxx] " before transmission.
+                prefix_width += 7
             weather_max_length = max(40, max_length - prefix_width)
 
             # Get weather forecast based on type
@@ -3625,9 +3631,12 @@ class WxCommand(BaseCommand):
 
             visibility_val = props.get('visibility', {}).get('value')
             if visibility_val is not None:
-                visibility = int(visibility_val * 0.000621371)  # Convert m to miles
+                visibility = visibility_val * 0.000621371  # Convert m to statute miles
                 if visibility > 0:
-                    obs_data_dict['visibility'] = str(visibility)
+                    if visibility >= 1:
+                        obs_data_dict['visibility'] = str(round(visibility))
+                    else:
+                        obs_data_dict['visibility'] = f"{visibility:.2f}".rstrip('0').rstrip('.')
 
             wind_gust_props = props.get('windGust', {})
             wind_gust_val = wind_gust_props.get('value')
