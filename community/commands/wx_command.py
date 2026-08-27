@@ -1533,7 +1533,7 @@ class WxCommand(BaseCommand):
                 start_time_str = period.get('startTime', '')
                 temp = period.get('temperature', '')
                 period.get('temperatureUnit', 'F')
-                short_forecast = period.get('shortForecast', '')
+                short_forecast = self._clean_forecast_wording(period.get('shortForecast', ''))
                 wind_speed = period.get('windSpeed', '')
                 wind_direction = period.get('windDirection', '')
                 precip_prob = period.get('probabilityOfPrecipitation', {}).get('value')
@@ -3749,24 +3749,6 @@ class WxCommand(BaseCommand):
                 pass
         return self.abbreviate_noaa(name)
 
-    # Qualifier phrases stripped from forecast summaries for brevity.
-    # Emoji carries the intensity/probability context instead.
-    _FORECAST_QUALIFIERS = (
-        "Slight Chance Of ",
-        "Slight Chance ",
-        "Chance Of ",
-        "Areas Of ",
-        "Patchy ",
-        "Mostly ",
-        "Partly ",
-        "A Few ",
-        "Scattered ",
-        "Isolated ",
-        "Numerous ",
-        "Widespread ",
-        "Likely ",
-    )
-
     # Phrase-level replacements applied before generic word abbreviation.
     # Keep this list ordered from most-specific to least-specific.
     _FORECAST_TEXT_REPLACEMENTS = (
@@ -3786,17 +3768,14 @@ class WxCommand(BaseCommand):
         return re.sub(r"\s+", " ", updated).strip()
 
     def _clean_forecast_wording(self, text: str) -> str:
-        """Remove leading qualifier words from a forecast phrase, capitalising the result."""
+        """Remove qualifier words from a forecast phrase, capitalising the result."""
         if not text:
             return text
 
         text = self._apply_forecast_text_replacements(text)
-        lower = text.lower()
-        for q in self._FORECAST_QUALIFIERS:
-            q_lower = q.lower()
-            if lower.startswith(q_lower):
-                text = text[len(q):]
-                lower = text.lower()
+        qualifier_pattern = r"\b(?:slight\s+chance\s+of|slight\s+chance|chance\s+of|chance|areas\s+of|patchy|mostly|partly|a\s+few|scattered|isolated|numerous|widespread|likely)\s+"
+        text = re.sub(qualifier_pattern, "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s+", " ", text).strip()
         # Re-capitalise first letter
         return text[:1].upper() + text[1:] if text else text
 
