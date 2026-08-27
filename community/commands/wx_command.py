@@ -1885,7 +1885,7 @@ class WxCommand(BaseCommand):
             Updated period string with additional details if space allows
         """
         result = period_str
-        current_weather_length + self._count_display_width(result)
+        current_weather_length = self._count_display_width(result)
 
         # Extract additional details - prefer observation data if available (more accurate)
         if observation_data:
@@ -1922,44 +1922,44 @@ class WxCommand(BaseCommand):
             humidity_str = f" {humidity}%RH"
             if self._count_display_width(result + humidity_str) + current_weather_length <= max_length:
                 result += humidity_str
-                current_weather_length + self._count_display_width(result)
+                current_weather_length = self._count_display_width(result)
 
         # Add dew point if available and space allows
         if dew_point:
             dew_str = f" Dew:{dew_point}"
             if self._count_display_width(result + dew_str) + current_weather_length <= max_length:
                 result += dew_str
-                current_weather_length + self._count_display_width(result)
+                current_weather_length = self._count_display_width(result)
 
         # Add visibility if available and space allows
         if visibility:
             vis_str = f" Vis:{visibility}mi"
             if self._count_display_width(result + vis_str) + current_weather_length <= max_length:
                 result += vis_str
-                current_weather_length + self._count_display_width(result)
+                current_weather_length = self._count_display_width(result)
 
         # Add precipitation probability if available and space allows
         if precip_prob:
             precip_str = f" 🌦️{precip_prob}%"
             if self._count_display_width(result + precip_str) + current_weather_length <= max_length:
                 result += precip_str
-                current_weather_length + self._count_display_width(result)
+                current_weather_length = self._count_display_width(result)
 
         # Add wind gusts if available and space allows
         if wind_gusts:
             gust_str = f" G:{wind_gusts}"
             if self._count_display_width(result + gust_str) + current_weather_length <= max_length:
                 result += gust_str
-                current_weather_length + self._count_display_width(result)
+                current_weather_length = self._count_display_width(result)
 
         # Add pressure if available and space allows
         if pressure:
             #pressure_str = f" P:{pressure}hPa"
             pressure_label = self._pressure_label(pressure)
-            pressure_str = f" P:{pressure_label}"
+            pressure_str = f" P:{pressure_label}({pressure}hPa)"
             if self._count_display_width(result + pressure_str) + current_weather_length <= max_length:
                 result += pressure_str
-
+                current_weather_length = self._count_display_width(result)
         return result
 
     def _count_display_width(self, text: str) -> int:
