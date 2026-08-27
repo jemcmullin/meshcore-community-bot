@@ -1086,7 +1086,7 @@ class WxCommand(BaseCommand):
             precip_chance = self.extract_precip_chance(detailed_forecast)
 
             # Create compact but complete weather string with emoji
-            weather_emoji = self.get_weather_emoji(_sf_raw)  # use raw for accurate emoji
+            weather_emoji = self.get_weather_emoji(_sf_raw, night=self._noaa_period_is_night(current))  # use raw for accurate emoji
             weather = f"{day_name}: {weather_emoji}{short_forecast} {temp}°{temp_unit}"
 
             # Add wind info if available
@@ -1173,9 +1173,8 @@ class WxCommand(BaseCommand):
                                 if any(word in period_name for word in ['night', 'tomorrow', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']):
                                     tomorrow_period = (i, period)
                                     break
-                        # If we didn't find a night period, use today_period as tomorrow_period
-                        if not tomorrow_period:
-                            tomorrow_period = today_period
+                        # No night period found after today_period; leave tomorrow_period unset rather than
+                        # duplicating today_period's daytime high as if it were a separate/low reading.
                     else:
                         # Look for periods after Tonight (next day)
                         for i, period in enumerate(forecast):
@@ -1214,12 +1213,12 @@ class WxCommand(BaseCommand):
                 period_wind_direction = period.get('windDirection', '')
 
                 if period_temp and period_short:
-                    # Try to get high/low
+                    # today_period is always a daytime period, so only extract a high (a matched low here is never real)
                     period_high_low = self.extract_high_low(
-                        period_detailed, self._noaa_period_temp_symbol(period)
+                        period_detailed, self._noaa_period_temp_symbol(period), night=False
                     )
 
-                    period_emoji = self.get_weather_emoji(_ps_raw)  # use raw for accurate emoji
+                    period_emoji = self.get_weather_emoji(_ps_raw, night=False)  # use raw for accurate emoji
                     if period_high_low:
                         period_str = f" | {period_name}: {period_emoji}{period_short} {period_high_low}"
                     else:
@@ -1277,12 +1276,12 @@ class WxCommand(BaseCommand):
                     period_wind_direction = period.get('windDirection', '')
 
                     if period_temp and period_short:
-                        # Try to get high/low
+                        # tonight_period is always a nighttime period, so only extract a low (a matched high here is never real)
                         period_high_low = self.extract_high_low(
-                            period_detailed, self._noaa_period_temp_symbol(period)
+                            period_detailed, self._noaa_period_temp_symbol(period), night=True
                         )
 
-                        period_emoji = self.get_weather_emoji(_ps_raw)  # use raw for accurate emoji
+                        period_emoji = self.get_weather_emoji(_ps_raw, night=True)  # use raw for accurate emoji
                         if period_high_low:
                             period_str = f" | {period_name}: {period_emoji}{period_short} {period_high_low}"
                         else:
@@ -1366,8 +1365,15 @@ class WxCommand(BaseCommand):
                             else:
                                 abbreviated_forecast = ' '.join(meaningful_words)
 
-                    period_emoji = self.get_weather_emoji(_ps_raw)  # use raw for accurate emoji
-                    period_str = f" | {period_name}: {period_emoji}{abbreviated_forecast} {period_temp}°"
+                    period_emoji = self.get_weather_emoji(_ps_raw, night=self._noaa_period_is_night(period))  # use raw for accurate emoji
+                    # Label the value H:/L: based on the period's actual day/night status so a
+                    # daytime high can never be mistaken for the expected overnight low.
+                    temp_symbol = self._noaa_period_temp_symbol(period)
+                    if self._noaa_period_is_night(period):
+                        period_temp_str = self._format_high_low(None, period_temp, temp_symbol)
+                    else:
+                        period_temp_str = self._format_high_low(period_temp, None, temp_symbol)
+                    period_str = f" | {period_name}: {period_emoji}{abbreviated_forecast} {period_temp_str}"
 
                     # Add wind info if space allows (using display width)
                     # Be more aggressive about adding wind when current is a night period
@@ -1556,7 +1562,7 @@ class WxCommand(BaseCommand):
                         time_str = ""
 
                 # Build hour line: "10AM: 🌦️ 26% Chance Light Rain 49° SS5"
-                emoji = self.get_weather_emoji(short_forecast)
+                emoji = self.get_weather_emoji(short_forecast, night=not period.get('isDaytime', True))
 
                 # Abbreviate forecast if too long
                 forecast_short = short_forecast
@@ -1680,7 +1686,7 @@ class WxCommand(BaseCommand):
                     continue
 
                 # Create period string
-                emoji = self.get_weather_emoji(_sf_raw)  # use raw for accurate emoji
+                emoji = self.get_weather_emoji(_sf_raw, night=self._noaa_period_is_night(period))  # use raw for accurate emoji
                 period_str = f"{period_name}: {emoji}{short_forecast} {temp}°{temp_unit}"
 
                 # Add wind info
@@ -1820,7 +1826,7 @@ class WxCommand(BaseCommand):
                 if day in days:
                     day_data = days[day]
                     day_abbrev = day_abbrev_map.get(day, day[:2])  # Use 2-letter abbrev
-                    emoji = self.get_weather_emoji(day_data['forecast'])
+                    emoji = self.get_weather_emoji(day_data['forecast'], night=not day_data.get('is_day', True))
                     # Abbreviate forecast text
                     forecast_short = self.abbreviate_noaa(day_data['forecast'])
                     # Further shorten if needed to fit on one line (but be less aggressive)
@@ -3278,20 +3284,53 @@ class WxCommand(BaseCommand):
 
         return ""
 
-    def extract_high_low(self, text: str, units_str: str = "°F") -> str:
-        """Extract high/low temperatures from forecast text; format via [Weather] templates."""
+    def extract_high_low(self, text: str, units_str: str = "°F", night: Optional[bool] = None) -> str:
+        """Extract high/low temperatures from forecast text; format via [Weather] templates.
+
+        A single period's detailedForecast only ever describes one side of the
+        day/night cycle, so a "low" pulled from a daytime period's text (or vice
+        versa) is frequently an unrelated number, not a real low. When `night` is
+        given, only the matching single value (high for day, low for night) is
+        extracted so a mismatched value can't sneak in.
+        """
         if not text:
+            return ""
+
+        def _single_ok(val: int) -> bool:
+            if units_str == "°C":
+                return -35 <= val <= 55
+            return 20 <= val <= 120
+
+        if night is True:
+            low_match = re.search(r'low\s+around\s+(\d+)', text.lower())
+            if low_match:
+                try:
+                    low_val = int(low_match.group(1))
+                    if _single_ok(low_val):
+                        return format_temperature_high_low(
+                            self.bot.config, None, low_val, units_str, self.logger
+                        )
+                except ValueError:
+                    pass
+            return ""
+
+        if night is False:
+            high_match = re.search(r'high\s+near\s+(\d+)', text.lower())
+            if high_match:
+                try:
+                    high_val = int(high_match.group(1))
+                    if _single_ok(high_val):
+                        return format_temperature_high_low(
+                            self.bot.config, high_val, None, units_str, self.logger
+                        )
+                except ValueError:
+                    pass
             return ""
 
         def _pair_ok(hi: int, lo: int) -> bool:
             if units_str == "°C":
                 return -35 <= hi <= 55 and -35 <= lo <= 55 and hi > lo
             return 20 <= hi <= 120 and 20 <= lo <= 120 and hi > lo
-
-        def _single_ok(val: int) -> bool:
-            if units_str == "°C":
-                return -35 <= val <= 55
-            return 20 <= val <= 120
 
         pair_patterns = [
             r'high\s+near\s+(\d+).*?low\s+around\s+(\d+)',
@@ -3600,7 +3639,10 @@ class WxCommand(BaseCommand):
                 if wind_gust and wind_gust > 10:
                     obs_data_dict['wind_gusts'] = str(wind_gust)
 
-            pressure_val = props.get('barometricPressure', {}).get('value')
+            sea_level_pressure = props.get('seaLevelPressure') or {}
+            pressure_val = sea_level_pressure.get('value')
+            if pressure_val is None:
+                pressure_val = (props.get('barometricPressure') or {}).get('value')
             if pressure_val is not None:
                 pressure = int(pressure_val / 100)  # Convert Pa to hPa
                 obs_data_dict['pressure'] = str(pressure)
@@ -3638,7 +3680,7 @@ class WxCommand(BaseCommand):
 
         return " ".join(conditions[:3])  # Limit to 3 conditions to avoid overflow
 
-    def get_weather_emoji(self, condition: str) -> str:
+    def get_weather_emoji(self, condition: str, night: bool = False) -> str:
         """Get emoji for weather condition"""
         if not condition:
             return ""
@@ -3647,7 +3689,7 @@ class WxCommand(BaseCommand):
 
         # Weather condition emojis
         if any(word in condition_lower for word in ['sunny', 'clear']):
-            return "☀️"
+            return "🌙" if night else "☀️"
         elif any(word in condition_lower for word in ['heavy rain', 'heavy showers', 'excessive rain']):
             return "+🌧️"  # Cloud with rain - more rain, less sun
         elif any(word in condition_lower for word in ['cloudy', 'overcast']):
