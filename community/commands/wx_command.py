@@ -1916,19 +1916,19 @@ class WxCommand(BaseCommand):
         # Always try to get precip_prob from detailed forecast (not in observation data)
         precip_prob = self.extract_precip_probability(detailed_forecast)
 
+        # Add wind gusts if available and space allows
+        if wind_gusts:
+            gust_str = f" G{wind_gusts}"
+            if self._count_display_width(result + gust_str) + current_weather_length <= max_length:
+                result += gust_str
+                current_weather_length = self._count_display_width(result)
+
         # Add humidity if available and space allows
         # Try to add all available details, only skip if they would exceed max_length
         if humidity:
             humidity_str = f" {humidity}%RH"
             if self._count_display_width(result + humidity_str) + current_weather_length <= max_length:
                 result += humidity_str
-                current_weather_length = self._count_display_width(result)
-
-        # Add dew point if available and space allows
-        if dew_point:
-            dew_str = f" Dew:{dew_point}"
-            if self._count_display_width(result + dew_str) + current_weather_length <= max_length:
-                result += dew_str
                 current_weather_length = self._count_display_width(result)
 
         # Add visibility if available and space allows
@@ -1945,13 +1945,6 @@ class WxCommand(BaseCommand):
                 result += precip_str
                 current_weather_length = self._count_display_width(result)
 
-        # Add wind gusts if available and space allows
-        if wind_gusts:
-            gust_str = f" G:{wind_gusts}"
-            if self._count_display_width(result + gust_str) + current_weather_length <= max_length:
-                result += gust_str
-                current_weather_length = self._count_display_width(result)
-
         # Add pressure if available and space allows
         if pressure:
             #pressure_str = f" P:{pressure}hPa"
@@ -1959,6 +1952,13 @@ class WxCommand(BaseCommand):
             pressure_str = f" P:{pressure_label}({pressure}hPa)"
             if self._count_display_width(result + pressure_str) + current_weather_length <= max_length:
                 result += pressure_str
+                current_weather_length = self._count_display_width(result)
+
+        # Add dew point if available and space allows
+        if dew_point:
+            dew_str = f" Dew:{dew_point}"
+            if self._count_display_width(result + dew_str) + current_weather_length <= max_length:
+                result += dew_str
                 current_weather_length = self._count_display_width(result)
         return result
 
