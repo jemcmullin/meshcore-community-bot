@@ -1928,6 +1928,13 @@ class WxCommand(BaseCommand):
                 result += gust_str
                 current_weather_length = self._count_display_width(result)
 
+        # Add precipitation probability if available and space allows
+        if precip_prob:
+            precip_str = f" Prob:{precip_prob}%"
+            if self._count_display_width(result + precip_str) + current_weather_length <= max_length:
+                result += precip_str
+                current_weather_length = self._count_display_width(result)
+
         # Add humidity if available and space allows
         # Try to add all available details, only skip if they would exceed max_length
         if humidity:
@@ -1941,13 +1948,6 @@ class WxCommand(BaseCommand):
             vis_str = f" Vis:{visibility}mi"
             if self._count_display_width(result + vis_str) + current_weather_length <= max_length:
                 result += vis_str
-                current_weather_length = self._count_display_width(result)
-
-        # Add precipitation probability if available and space allows
-        if precip_prob:
-            precip_str = f" 🌦️{precip_prob}%"
-            if self._count_display_width(result + precip_str) + current_weather_length <= max_length:
-                result += precip_str
                 current_weather_length = self._count_display_width(result)
 
         # Add pressure if available and space allows
