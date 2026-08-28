@@ -1089,7 +1089,10 @@ class WxCommand(BaseCommand):
 
             # Extract additional useful info from detailed forecast
             self.extract_humidity(detailed_forecast)
-            precip_chance = self.extract_precip_chance(detailed_forecast)
+            # Keep the original short forecast available for categorical PoP fallback.
+            precip_chance = self.extract_precip_chance(
+                f"{_sf_raw} {detailed_forecast}"
+            )
 
             # Create compact but complete weather string with emoji
             weather_emoji = self.get_weather_emoji(_sf_raw, night=self._noaa_period_is_night(current))  # use raw for accurate emoji
@@ -1537,6 +1540,8 @@ class WxCommand(BaseCommand):
                 wind_speed = period.get('windSpeed', '')
                 wind_direction = period.get('windDirection', '')
                 precip_prob = period.get('probabilityOfPrecipitation', {}).get('value')
+                if precip_prob is None:
+                    precip_prob = self.extract_precip_chance(period.get('shortForecast', ''))
 
                 # Format time (e.g., "2PM", "10AM")
                 time_str = ""
@@ -3271,7 +3276,7 @@ class WxCommand(BaseCommand):
         return ""
 
     def extract_precip_chance(self, text: str) -> str:
-        """Extract precipitation chance from forecast text"""
+        """Extract numeric PoP, or estimate it from standard NWS wording."""
         if not text:
             return ""
 
@@ -3287,6 +3292,17 @@ class WxCommand(BaseCommand):
             match = re.search(pattern, text.lower())
             if match:
                 return match.group(1)
+
+        # Fallback for NOAA summaries that provide a category but no number.
+        qualifier_fallbacks = (
+            (r"\bslight\s+chance\b", "20"),
+            (r"\b(?:chance|scattered)\b", "40"),
+            (r"\blikely\b", "60"),
+            (r"\bdefinite\b", "80"),
+        )
+        for pattern, probability in qualifier_fallbacks:
+            if re.search(pattern, text, re.IGNORECASE):
+                return probability
 
         return ""
 
