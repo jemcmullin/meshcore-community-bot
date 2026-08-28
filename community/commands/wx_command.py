@@ -1949,7 +1949,7 @@ class WxCommand(BaseCommand):
         if pressure:
             #pressure_str = f" P:{pressure}hPa"
             pressure_label = self._pressure_label(pressure)
-            pressure_str = f" P:{pressure_label}({pressure}hPa)"
+            pressure_str = f" P:{pressure_label}"
             if self._count_display_width(result + pressure_str) + current_weather_length <= max_length:
                 result += pressure_str
                 current_weather_length = self._count_display_width(result)
@@ -3648,12 +3648,17 @@ class WxCommand(BaseCommand):
                 if wind_gust and wind_gust > 10:
                     obs_data_dict['wind_gusts'] = str(wind_gust)
 
-            sea_level_pressure = props.get('seaLevelPressure') or {}
-            pressure_val = sea_level_pressure.get('value')
-            if pressure_val is None:
-                pressure_val = (props.get('barometricPressure') or {}).get('value')
-            if pressure_val is not None:
-                pressure = int(pressure_val / 100)  # Convert Pa to hPa
+            sea_level_pressure = props.get('seaLevelPressure')
+            barometric_pressure = props.get('barometricPressure')
+            pressure_data = sea_level_pressure if isinstance(sea_level_pressure, dict) else None
+            if not pressure_data or pressure_data.get('value') is None:
+                pressure_data = barometric_pressure if isinstance(barometric_pressure, dict) else None
+            if pressure_data and pressure_data.get('value') is not None:
+                pressure_val = float(pressure_data['value'])
+                unit_code = str(pressure_data.get('unitCode', '')).lower()
+                if unit_code.endswith(':pa') or unit_code == 'pa':
+                    pressure_val /= 100
+                pressure = round(pressure_val)
                 obs_data_dict['pressure'] = str(pressure)
 
             return obs_data_dict
