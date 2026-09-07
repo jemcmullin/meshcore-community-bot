@@ -3795,8 +3795,8 @@ class WxCommand(BaseCommand):
             return text
 
         text = self._apply_forecast_text_replacements(text)
-        qualifier_pattern = r"\b(?:slight\s+chance\s+of|slight\s+chance|chance\s+of|chance|areas\s+of|patchy|mostly|partly|a\s+few|scattered|isolated|numerous|widespread|likely)\s+"
-        text = re.sub(qualifier_pattern, "", text, flags=re.IGNORECASE)
+        # qualifier_pattern = r"\b(?:slight\s+chance\s+of|slight\s+chance|chance\s+of|chance|areas\s+of|patchy|mostly|partly|a\s+few|scattered|isolated|numerous|widespread|likely)\s+"
+        # text = re.sub(qualifier_pattern, "", text, flags=re.IGNORECASE)
         text = re.sub(r"\s+", " ", text).strip()
         # Re-capitalise first letter
         return text[:1].upper() + text[1:] if text else text
