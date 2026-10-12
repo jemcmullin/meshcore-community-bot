@@ -90,7 +90,17 @@ other.hamradio = Amateur radio emergency net
 other.cm-reach = Colorado Mesh range check tool
 
 [Banned_Users]
+# List of banned sender names (comma-separated). Matching is prefix (starts-with):
+# "Awful Username" also matches "Awful Username 🍆". No bot responses in channels or DMs.
+# Community layer: also blocks MQTT packet publishing from these senders.
 banned_users =
+
+# List of banned sender public keys (comma-separated, hex format).
+# Can use full 64-character key or shorter prefix for partial matching.
+# Keys are normalized to lowercase; 0x prefix is optional.
+# Community layer: blocks MQTT packet publishing from these public keys.
+# Examples: 0123456789abcdef, fedcba9876543210 (matches any key starting with these)
+banned_pubkeys =
 
 [Admin_ACL]
 admin_pubkeys =

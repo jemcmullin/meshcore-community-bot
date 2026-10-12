@@ -22,9 +22,11 @@ from community.web_viewer_patch import patch_web_viewer_integration
 from modules.commands.base_command import BaseCommand
 from modules.core import MeshCoreBot
 
+from .banned_users_integration import BannedUsersManager
 from .config import CommunityConfig
 from .firmware_coordinator import FirmwareCoordinator
 from .message_interceptor import MessageInterceptor
+from .packet_capture_patch import patch_packet_capture_for_banned_users
 
 logger = logging.getLogger('CommunityBot')
 
@@ -57,6 +59,9 @@ class CommunityBot(MeshCoreBot):
             bot=self,
             firmware_coordinator=self.firmware_coordinator,
         )
+
+        # Initialize banned users manager and patch packet capture for MQTT filtering
+        self._setup_banned_users_integration()
 
         # Load community-specific commands
         self._load_community_commands()
@@ -101,6 +106,21 @@ class CommunityBot(MeshCoreBot):
             handler = logging.StreamHandler()
             handler.setFormatter(formatter)
             community_logger.addHandler(handler)
+
+    def _setup_banned_users_integration(self):
+        """Initialize banned users manager and patch packet capture.
+
+        Extends meshcore-bot's Banned_Users config to also block MQTT packets from banned senders.
+        Supports banning by username (prefix-match) or public key (hex format, prefix-match).
+        """
+        try:
+            self.banned_users_manager = BannedUsersManager(self.config, logger)
+            if self.banned_users_manager.banned_usernames or self.banned_users_manager.banned_pubkeys:
+                # Patch packet capture if it's enabled
+                patch_packet_capture_for_banned_users(self, self.banned_users_manager)
+            logger.info("Banned users integration initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize banned users integration: {e}")
 
     def _load_community_commands(self):
         """Load community-specific commands into the plugin system.
