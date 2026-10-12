@@ -35,7 +35,9 @@ def patch_packet_capture_for_banned_users(bot: Any, banned_users_manager: Banned
     logger = logging.getLogger("PacketCapturePatch")
     original_process_packet = service.process_packet
 
-    async def patched_process_packet(raw_hex: str, payload: dict[str, Any], metadata: Optional[dict[str, Any]] = None) -> None:
+    async def patched_process_packet(
+        self: Any, raw_hex: str, payload: dict[str, Any], metadata: Optional[dict[str, Any]] = None
+    ) -> None:
         """Patched version of process_packet() that filters banned senders from MQTT.
 
         Packets from banned senders are:
@@ -44,7 +46,7 @@ def patch_packet_capture_for_banned_users(bot: Any, banned_users_manager: Banned
         - Still logged normally
         """
         # Decode packet to check sender
-        packet_info = service.decode_packet(raw_hex, payload)
+        packet_info = self.decode_packet(raw_hex, payload)
 
         # Check if sender is banned (only for message-type packets)
         if packet_info and banned_users_manager.should_block_packet_from_mqtt(packet_info):
@@ -52,27 +54,27 @@ def patch_packet_capture_for_banned_users(bot: Any, banned_users_manager: Banned
             ban_msg = f"sender '{sender_name}'" if sender_name else "sender"
             if sender_pubkey:
                 ban_msg = f"{ban_msg} (key: {sender_pubkey[:16]}...)" if sender_name else f"key {sender_pubkey[:16]}..."
-            service.logger.debug(
+            self.logger.debug(
                 f"Blocked MQTT publish for packet from banned {ban_msg} "
                 f"({packet_info.get('payload_type', 'UNKNOWN')} type)"
             )
 
             # Still count the packet and write to file, but skip MQTT
-            service.packet_count += 1
+            self.packet_count += 1
 
             # Write to file if enabled
-            if service.output_handle:
+            if self.output_handle:
                 try:
                     import json
 
-                    formatted_packet = service._format_packet_data(raw_hex, packet_info or {}, payload, metadata)
-                    service.output_handle.write_line(json.dumps(formatted_packet, default=str))
+                    formatted_packet = self._format_packet_data(raw_hex, packet_info or {}, payload, metadata)
+                    self.output_handle.write_line(json.dumps(formatted_packet, default=str))
                 except Exception as e:
-                    service.logger.debug(f"Error writing banned packet to file: {e}")
+                    self.logger.debug(f"Error writing banned packet to file: {e}")
 
             # Log summary
-            service._log_packet_summary(
-                f"📦 Captured packet #{service.packet_count}: "
+            self._log_packet_summary(
+                f"📦 Captured packet #{self.packet_count}: "
                 f"{packet_info.get('route', 'U') if packet_info else 'U'} type "
                 f"{packet_info.get('packet_type', '0') if packet_info else '0'}, "
                 f"{len(raw_hex) // 2} bytes (MQTT blocked: sender banned)"
